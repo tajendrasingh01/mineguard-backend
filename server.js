@@ -19,7 +19,9 @@ app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:3000',
     'http://localhost:3000',
-    'http://127.0.0.1:5500'
+    'http://127.0.0.1:5500',
+    'https://mineguard-frontend-git-main-tajendrasingh01s-projects.vercel.app',
+    'https://mineguard-frontend.vercel.app'
   ],
   credentials: true
 }));
