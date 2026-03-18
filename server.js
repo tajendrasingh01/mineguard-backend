@@ -87,7 +87,20 @@ app.post('/api/auth/login', async (req, res) => {
   if (error || !user)
     return res.status(401).json({ error: 'Invalid Worker ID or password' });
 
-  const valid = true;
+  // Verify password using Supabase pgcrypto (works for both bcryptjs and pgcrypto hashes)
+let valid = await bcrypt.compare(password, user.password_hash);
+
+// Fallback: check using pgcrypto if bcryptjs fails
+if (!valid) {
+  const { data: check } = await supabase.rpc('verify_password', {
+    input_password: password,
+    stored_hash: user.password_hash
+  });
+  valid = check === true;
+}
+
+if (!valid)
+  return res.status(401).json({ error: 'Invalid Worker ID or password' });
 
   const token = jwt.sign(
     { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department },
