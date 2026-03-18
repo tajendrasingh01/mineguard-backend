@@ -24,8 +24,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ── AUTH MIDDLEWARE ───────────────────────────────────────────
 function requireAuth(req, res, next) {
@@ -87,20 +87,9 @@ app.post('/api/auth/login', async (req, res) => {
   if (error || !user)
     return res.status(401).json({ error: 'Invalid Worker ID or password' });
 
-  // Verify password using Supabase pgcrypto (works for both bcryptjs and pgcrypto hashes)
-let valid = await bcrypt.compare(password, user.password_hash);
-
-// Fallback: check using pgcrypto if bcryptjs fails
-if (!valid) {
-  const { data: check } = await supabase.rpc('verify_password', {
-    input_password: password,
-    stored_hash: user.password_hash
-  });
-  valid = check === true;
-}
-
-if (!valid)
-  return res.status(401).json({ error: 'Invalid Worker ID or password' });
+  const valid = await bcrypt.compare(password, user.password_hash);
+  if (!valid)
+    return res.status(401).json({ error: 'Invalid Worker ID or password' });
 
   const token = jwt.sign(
     { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department },
@@ -118,7 +107,7 @@ app.get('/api/auth/me', requireAuth, (req, res) => res.json({ user: req.user }))
 app.post('/api/incidents', requireAuth, async (req, res) => {
   const { incident_type, date_of_incident, time_of_incident, location_zone,
     location_detail, severity, persons_injured, description,
-    immediate_actions, ppe_worn, sop_followed, witnesses } = req.body;
+    immediate_actions, ppe_worn, sop_followed, witnesses, photos } = req.body;
 
   if (!incident_type || !date_of_incident || !severity || !description || !location_zone)
     return res.status(400).json({ error: 'Required fields missing' });
@@ -135,6 +124,7 @@ app.post('/api/incidents', requireAuth, async (req, res) => {
     ppe_worn: ppe_worn || 'unknown',
     sop_followed: sop_followed || 'unknown',
     witnesses: witnesses || null,
+    photos: photos || null,
     status: 'open'
   }]).select('id, incident_ref, created_at').single();
 
