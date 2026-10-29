@@ -388,9 +388,20 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
     .gte('created_at',period.from).lte('created_at',period.to).order('created_at',{ascending:false}).range(offset,offset+limit-1);
   if(p.role==='AREA_SAFETY_OFFICER') q=q.eq('area_id',p.assigned_area_id);
   else if(p.role!=='HQ_SAFETY_HEAD') q=q.eq('mine_id',p.assigned_mine_id);
-  if(req.query.status && STATUS_VALUES.has(req.query.status)) q=q.eq('status',req.query.status);
-  if(req.query.category && CATEGORIES.has(req.query.category)) q=q.eq('category',req.query.category);
+  if(req.query.status) {
+    if(!STATUS_VALUES.has(req.query.status)) return res.status(400).json({error:'Invalid status filter'});
+    q=q.eq('status',req.query.status);
+  }
+  if(req.query.category) {
+    if(!CATEGORIES.has(req.query.category)) return res.status(400).json({error:'Invalid category filter'});
+    q=q.eq('category',req.query.category);
+  }
   if(req.query.mine_id) q=q.eq('mine_id',req.query.mine_id);
+  if(req.query.area_id) {
+    if(!['HQ_SAFETY_HEAD','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Area filter is not permitted for this role'});
+    if(p.role==='AREA_SAFETY_OFFICER' && req.query.area_id!==p.assigned_area_id) return res.status(404).json({error:'Area not found'});
+    q=q.eq('area_id',req.query.area_id);
+  }
   const {data,error,count}=await q;
   if(error) return res.status(500).json({error:'Unable to load incidents'});
   res.json({incidents:data||[],total:count||0,limit,offset,from:period.from,to:period.to});
@@ -555,7 +566,8 @@ app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res
 });
 
 app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (req,res) => {
-  const p=req.principal;
+  const p=req.principal, period=parsePeriod(req.query);
+  if(!period) return res.status(400).json({error:'Invalid reporting period'});
   if(p.role!=='HQ_SAFETY_HEAD' && !(p.role==='AREA_SAFETY_OFFICER'&&p.assigned_area_id===req.params.id))
     return res.status(404).json({error:'Area not found'});
   const {data:area,error:ae}=await supabase.from('areas').select('id,name').eq('id',req.params.id).maybeSingle();
@@ -563,9 +575,16 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
   const {data:mines,error:me}=await supabase.from('mines').select('id,name,area_id').eq('area_id',area.id).order('name');
   if(me) return res.status(500).json({error:'Unable to load Area'});
   const {data:incidents,error:ie}=await supabase.from('incidents').select('id,mine_id,category,discipline,status,created_at,resolved_at')
-    .eq('area_id',area.id).not('mine_id','is',null).limit(10000);
+    .eq('area_id',area.id).not('mine_id','is',null).gte('created_at',period.from).lte('created_at',period.to).limit(10000);
   if(ie) return res.status(500).json({error:'Unable to load Area analytics'});
-  res.json({area,mines:mines||[],total_incidents:(incidents||[]).length,mine_counts:(mines||[]).map(m=>({mine_id:m.id,mine_name:m.name,total_incidents:(incidents||[]).filter(i=>i.mine_id===m.id).length}))});
+  const rows=incidents||[], resolved=rows.filter(i=>['resolved','closed'].includes(i.status));
+  const durations=resolved.map(i=>i.resolved_at?((new Date(i.resolved_at)-new Date(i.created_at))/3600000):null).filter(n=>Number.isFinite(n)&&n>=0);
+  res.json({area,period,definitions:{resolution_rate:'Resolved or closed incidents divided by all incidents created in the selected period; null when denominator is zero.',average_resolution_hours:'Mean elapsed hours from creation to first recorded resolution; unresolved or invalid durations excluded.'},
+    total_incidents:rows.length,unresolved_incidents:rows.filter(i=>!['resolved','closed'].includes(i.status)).length,
+    escalated_incidents:rows.filter(i=>i.status==='escalated').length,
+    resolution_rate_percent:rows.length?Math.round(resolved.length/rows.length*10000)/100:null,
+    average_resolution_hours:durations.length?Math.round(durations.reduce((x,y)=>x+y,0)/durations.length*100)/100:null,
+    mine_counts:(mines||[]).map(m=>({mine_id:m.id,mine_name:m.name,total_incidents:rows.filter(i=>i.mine_id===m.id).length}))});
 });
 
 app.listen(PORT, () => console.log(`MineGuard API running on port ${PORT}`));
