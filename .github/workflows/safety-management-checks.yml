@@ -1,4 +1,5 @@
 name: MineGuard safety-management checks
+# Validates syntax and manifest after each branch/PR update
 on:
   pull_request:
   push:
