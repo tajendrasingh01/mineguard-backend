@@ -1,5 +1,4 @@
 name: MineGuard safety-management checks
-# Validates syntax and manifest after each branch/PR update
 on:
   pull_request:
   push:
@@ -7,6 +6,26 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mineguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mineguard_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: mineguard_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,3 +36,8 @@ jobs:
       - run: node --check seed-secl-areas.js
       - run: node --check safety-policy.js
       - run: npm test
+      - name: Apply representative legacy schema and SECL migration to disposable PostgreSQL
+        run: |
+          psql -v ON_ERROR_STOP=1 -f test/fixtures/baseline-schema.sql
+          psql -v ON_ERROR_STOP=1 -f migrations/20261029_secl_safety_management.sql
+          psql -v ON_ERROR_STOP=1 -f test/integration/safety-migration.test.sql
