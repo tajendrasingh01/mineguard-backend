@@ -44,7 +44,7 @@ async function main(){
  const korba=(finalAreas||[]).find(a=>normalize(a.name)==='korba');
  report.centralWorkshopUnderKorba=!!korba&&(finalMines||[]).some(m=>m.area_id===korba.id&&normalize(m.name)==='central workshop');
  report.separateCwsKorbaArea=(finalAreas||[]).some(a=>normalize(a.name)==='cws korba');
- report.success=report.canonicalAreasPresent===13&&report.manifestProjectsPresent===79&&report.centralWorkshopUnderKorba&&!report.separateCwsKorbaArea&&report.conflicts.length===0&&report.errors.length===0;
+ report.success=report.finalAreaRows===13&&report.canonicalAreasPresent===13&&report.finalProjectRows===79&&report.manifestProjectsPresent===79&&report.centralWorkshopUnderKorba&&!report.separateCwsKorbaArea&&report.conflicts.length===0&&report.errors.length===0;
  console.log(JSON.stringify(report,null,2));if(!report.success)process.exitCode=2;
 }
 main().catch(e=>{console.error('Seed failed:',e.message);process.exitCode=1;});
