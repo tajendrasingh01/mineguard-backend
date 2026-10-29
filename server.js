@@ -335,8 +335,32 @@ app.get('/health', (req, res) => {
 // SECL safety migration has been applied. It never returns schema/data details.
 app.get('/ready', async (req, res) => {
   try {
-    const { error } = await supabase.from('areas').select('id', { head: true, count: 'exact' }).limit(1);
-    if (error) return res.status(503).json({ status: 'not_ready', error: 'Database or safety schema is unavailable' });
+    const checks = await Promise.all([
+      supabase.from('areas').select('id', { head: true, count: 'exact' }).limit(1),
+      supabase.from('mines').select('id,area_id', { head: true, count: 'exact' }).limit(1),
+      supabase.from('users').select('id,assigned_mine_id,assigned_area_id,is_active', { head: true, count: 'exact' }).limit(1),
+      supabase.from('incident_comments').select('id', { head: true, count: 'exact' }).limit(1),
+      supabase.from('incident_forwarding_history').select('id', { head: true, count: 'exact' }).limit(1)
+    ]);
+    if (checks.some(result => result.error)) {
+      return res.status(503).json({ status: 'not_ready', error: 'Database or safety schema is unavailable' });
+    }
+    // A missing incident must return P0002; this confirms the atomic RPC exists without writing data.
+    const rpc = await supabase.rpc('mineguard_forward_incident_atomic', {
+      p_incident_id: '00000000-0000-0000-0000-000000000000',
+      p_expected_version: 1,
+      p_new_status: 'open',
+      p_assignee_id: null,
+      p_actor_id: null,
+      p_from_role: 'healthcheck',
+      p_to_role: 'healthcheck',
+      p_action: 'FORWARD',
+      p_comments: null,
+      p_context: { healthcheck: true }
+    });
+    if (!rpc.error || rpc.error.code !== 'P0002') {
+      return res.status(503).json({ status: 'not_ready', error: 'Required atomic workflow database function is unavailable' });
+    }
     return res.json({ status: 'ready' });
   } catch {
     return res.status(503).json({ status: 'not_ready', error: 'Database or safety schema is unavailable' });
