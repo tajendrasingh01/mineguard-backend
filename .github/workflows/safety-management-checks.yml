@@ -15,4 +15,5 @@ jobs:
       - run: npm install
       - run: node --check server.js
       - run: node --check seed-secl-areas.js
+      - run: node --check safety-policy.js
       - run: npm test
