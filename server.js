@@ -144,6 +144,7 @@ app.get('/api/incidents/mine', requireAuth, async (req, res) => {
 app.get('/api/admin/incidents', requireAdmin, async (req, res) => {
   const { severity, location_type, limit = 100, offset = 0 } = req.query;
   let query = supabase.from('incidents').select('*')
+    .is('mine_id', null) // legacy admin view must not bypass new organizational RBAC
     .order('created_at', { ascending: false })
     .range(Number(offset), Number(offset) + Number(limit) - 1);
   if (severity && severity !== 'all') query = query.eq('severity', severity);
@@ -160,14 +161,15 @@ app.patch('/api/admin/incidents/:id', requireAdmin, async (req, res) => {
   if (status) updates.status = status;
   if (admin_notes !== undefined) updates.admin_notes = admin_notes;
   const { data, error } = await supabase.from('incidents')
-    .update(updates).eq('id', req.params.id).select().single();
+    .update(updates).eq('id', req.params.id).is('mine_id', null).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json({ incident: data });
 });
 
 app.delete('/api/admin/incidents/:id', requireAdmin, async (req, res) => {
-  const { error } = await supabase.from('incidents').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
+  const { data, error } = await supabase.from('incidents').delete().eq('id', req.params.id).is('mine_id', null).select('id').maybeSingle();
+  if (error) return res.status(500).json({ error: 'Unable to delete legacy incident' });
+  if (!data) return res.status(404).json({ error: 'Legacy incident not found' });
   res.json({ message: 'Incident deleted' });
 });
 
@@ -181,6 +183,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
 
   const { data: recent } = await supabase.from('incidents')
     .select('severity, location_zone, created_at')
+    .is('mine_id', null)
     .gte('created_at', thirtyDaysAgo.toISOString());
 
   const total = recent?.length || 0;
@@ -193,11 +196,11 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   });
 
   const { count: openCount } = await supabase.from('incidents')
-    .select('id', { count: 'exact', head: true }).eq('status', 'open');
+    .select('id', { count: 'exact', head: true }).eq('status', 'open').is('mine_id', null);
 
   const { data: lastSerious } = await supabase.from('incidents')
     .select('date_of_incident')
-    .in('severity', ['serious', 'critical', 'fatality'])
+    .in('severity', ['serious', 'critical', 'fatality']).is('mine_id', null)
     .order('date_of_incident', { ascending: false }).limit(1);
 
   let safeDays = null;
@@ -387,6 +390,7 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
   else if(p.role!=='HQ_SAFETY_HEAD') q=q.eq('mine_id',p.assigned_mine_id);
   if(req.query.status && STATUS_VALUES.has(req.query.status)) q=q.eq('status',req.query.status);
   if(req.query.category && CATEGORIES.has(req.query.category)) q=q.eq('category',req.query.category);
+  if(req.query.mine_id) q=q.eq('mine_id',req.query.mine_id);
   const {data,error,count}=await q;
   if(error) return res.status(500).json({error:'Unable to load incidents'});
   res.json({incidents:data||[],total:count||0,limit,offset,from:period.from,to:period.to});
