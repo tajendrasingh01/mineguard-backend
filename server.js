@@ -168,10 +168,7 @@ app.patch('/api/admin/incidents/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/admin/incidents/:id', requireAdmin, async (req, res) => {
-  const { data, error } = await supabase.from('incidents').delete().eq('id', req.params.id).is('mine_id', null).select('id').maybeSingle();
-  if (error) return res.status(500).json({ error: 'Unable to delete legacy incident' });
-  if (!data) return res.status(404).json({ error: 'Legacy incident not found' });
-  res.json({ message: 'Incident deleted' });
+  return res.status(409).json({ error: 'Incident deletion is disabled to preserve safety records and auditability. Use an approved status workflow instead.' });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -415,12 +412,14 @@ app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, asyn
   const p=req.principal, nextStatus=req.body.status;
   if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Status changes are not permitted for this role'});
   if(!STATUS_VALUES.has(nextStatus)) return res.status(400).json({error:'Invalid status'});
+  if(nextStatus==='escalated') return res.status(400).json({error:'Use the authorized forwarding workflow to escalate an incident'});
   try {
     const incident=await getIncidentForPrincipal(req.params.id,p);
     if(!incident) return res.status(404).json({error:'Incident not found'});
     const allowed=STATUS_TRANSITIONS[incident.status]||new Set();
     if(!allowed.has(nextStatus)) return res.status(409).json({error:'Status transition is not permitted'});
     if(nextStatus==='closed' && incident.status!=='resolved') return res.status(409).json({error:'Only resolved incidents can be closed'});
+    if(nextStatus==='action_assigned' && !incident.assignee_id) return res.status(409).json({error:'Assign an authorized recipient before marking action assigned'});
     const updates={status:nextStatus,updated_at:new Date().toISOString(),version:(incident.version||1)+1};
     if(nextStatus==='resolved'&&!incident.resolved_at) updates.resolved_at=new Date().toISOString();
     if(nextStatus==='closed') updates.closed_at=new Date().toISOString();
@@ -455,6 +454,12 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
     }
     if(action==='ESCALATE' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('escalated'))
       return res.status(409).json({error:'Incident cannot be escalated from its current status'});
+    if(action==='ASSIGN' && incident.status!=='under_review' && incident.status!=='action_assigned')
+      return res.status(409).json({error:'Corrective actions can be assigned only after review'});
+    if(action==='REASSIGN' && incident.status!=='action_assigned')
+      return res.status(409).json({error:'Only an action-assigned incident can be reassigned'});
+    if(action==='ASSIGN' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('action_assigned') && incident.status!=='action_assigned')
+      return res.status(409).json({error:'Incident cannot enter Action Assigned from its current status'});
     if(p.role==='AREA_SAFETY_OFFICER') {
       if(!['LOCAL_SUPERVISOR','LOCAL_ENGINEER','MINE_MANAGER'].includes(target.role))
         return res.status(403).json({error:'Area forwarding destination role is not permitted'});
@@ -466,7 +471,7 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
         return res.status(403).json({error:'Destination is outside the assigned Area'});
       }
     }
-    const newStatus=action==='ESCALATE'?'escalated':incident.status;
+    const newStatus=action==='ESCALATE'?'escalated':(action==='ASSIGN'?'action_assigned':incident.status);
     const {data:result,error:rpcError}=await supabase.rpc('mineguard_forward_incident_atomic',{
       p_incident_id:incident.id,
       p_expected_version:incident.version||1,
