@@ -103,6 +103,60 @@ end $$;
 drop trigger if exists incidents_hierarchy_guard on public.incidents;
 create trigger incidents_hierarchy_guard before insert or update of mine_id,area_id on public.incidents
 for each row execute function public.mineguard_validate_incident_hierarchy();
+
+-- Atomic assignment + append-only history. The API performs identity and destination
+-- authorization before calling this function; the row lock/version check prevents races.
+create or replace function public.mineguard_forward_incident_atomic(
+ p_incident_id uuid,
+ p_expected_version integer,
+ p_new_status text,
+ p_assignee_id uuid,
+ p_actor_id uuid,
+ p_from_role text,
+ p_to_role text,
+ p_action text,
+ p_comments text,
+ p_context jsonb
+) returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $
+declare
+ current_incident public.incidents%rowtype;
+ updated_incident public.incidents%rowtype;
+ forwarding_event public.incident_forwarding_history%rowtype;
+begin
+ if p_action not in ('FORWARD','ESCALATE','ASSIGN','REASSIGN') then
+   raise exception 'Invalid forwarding action' using errcode='22023';
+ end if;
+ if p_action='ESCALATE' and (p_new_status<>'escalated' or length(trim(coalesce(p_comments,'')))=0) then
+   raise exception 'Escalation requires escalated status and comments' using errcode='22023';
+ end if;
+ select * into current_incident from public.incidents where id=p_incident_id for update;
+ if not found then raise exception 'Incident not found' using errcode='P0002'; end if;
+ if current_incident.version is distinct from p_expected_version then
+   raise exception 'Incident changed concurrently' using errcode='40001';
+ end if;
+ if p_new_status is distinct from current_incident.status
+    and p_new_status not in ('escalated') then
+   raise exception 'Forwarding cannot perform an arbitrary status transition' using errcode='22023';
+ end if;
+ update public.incidents
+   set assignee_id=p_assignee_id, status=p_new_status, updated_at=now(), version=version+1
+   where id=p_incident_id returning * into updated_incident;
+ insert into public.incident_forwarding_history(
+   incident_id,actor_id,from_user_id,to_user_id,from_role,to_role,action,comments,context
+ ) values (
+   p_incident_id,p_actor_id,current_incident.assignee_id,p_assignee_id,p_from_role,p_to_role,
+   p_action,nullif(trim(p_comments),''),coalesce(p_context,'{}'::jsonb)
+ ) returning * into forwarding_event;
+ return jsonb_build_object('incident',to_jsonb(updated_incident),'forwarding_event',to_jsonb(forwarding_event));
+end;
+$;
+revoke all on function public.mineguard_forward_incident_atomic(uuid,integer,text,uuid,uuid,text,text,text,text,jsonb) from public, anon, authenticated;
+grant execute on function public.mineguard_forward_incident_atomic(uuid,integer,text,uuid,uuid,text,text,text,text,jsonb) to service_role;
+
 alter table public.areas enable row level security;
 alter table public.mines enable row level security;
 alter table public.incident_comments enable row level security;
