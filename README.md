@@ -20,6 +20,7 @@ All require a bearer token and a database-backed active safety role:
 - `POST /api/safety/incidents/:id/forward`
 - `GET /api/safety/recipients?incident_id=` (returns only recipients permitted for that incident and role)
 - `GET /api/safety/analytics/hq?from=&to=`
+- `GET /api/safety/analytics/area/:id?from=&to=`
 - `GET /api/safety/analytics/area/:id`
 
 Existing auth, legacy incident/admin and SOP routes remain for compatibility. Legacy admin deletion remains a residual risk to disable after an approved migration plan. Public self-registration creates only legacy worker accounts.
