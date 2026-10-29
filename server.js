@@ -4,6 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole } = require('./safety-policy');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -270,22 +271,6 @@ app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 // These endpoints always reload the principal from the database;
 // client-supplied role/scope fields are never used for authorization.
 // ════════════════════════════════════════════════════════════════
-const SAFETY_ROLES = new Set([
-  'MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD',
-  'LOCAL_SUPERVISOR','LOCAL_ENGINEER'
-]);
-const STATUS_TRANSITIONS = {
-  open: new Set(['under_review','escalated']),
-  under_review: new Set(['action_assigned','escalated']),
-  action_assigned: new Set(['under_review','resolved','escalated']),
-  escalated: new Set(['under_review','action_assigned','resolved']),
-  resolved: new Set(['closed','under_review']),
-  closed: new Set()
-};
-const STATUS_VALUES = new Set(Object.keys(STATUS_TRANSITIONS));
-const DISCIPLINES = new Set(['Mining','Electrical & Mechanical']);
-const CATEGORIES = new Set(['Near Miss','Unsafe Act','Unsafe Condition']);
-
 async function safetyPrincipal(req, res, next) {
   try {
     const { data, error } = await supabase.from('users')
@@ -298,12 +283,6 @@ async function safetyPrincipal(req, res, next) {
   } catch {
     return res.status(500).json({error:'Unable to authenticate request'});
   }
-}
-function canReadMine(principal, mine) {
-  if (!mine) return false;
-  if (principal.role === 'HQ_SAFETY_HEAD') return true;
-  if (['AREA_SAFETY_OFFICER'].includes(principal.role)) return mine.area_id === principal.assigned_area_id;
-  return principal.assigned_mine_id === mine.id;
 }
 async function getMine(id) {
   const {data,error}=await supabase.from('mines').select('id,name,area_id,normalized_name').eq('id',id).maybeSingle();
@@ -354,7 +333,7 @@ app.get('/api/org/mines', requireAuth, safetyPrincipal, async (req,res) => {
 app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal;
   if(!['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)) return res.status(403).json({error:'Only assigned Safety Officers can create field observations'});
-  const category=req.body.category, discipline=p.role==='MINE_SO_MINING'?'Mining':'Electrical & Mechanical';
+  const category=req.body.category, discipline=disciplineForRole(p.role);
   if(!CATEGORIES.has(category)||!String(req.body.description||'').trim()||String(req.body.description).length>10000)
     return res.status(400).json({error:'A valid category and description are required'});
   if(req.body.discipline && req.body.discipline!==discipline) return res.status(403).json({error:'Discipline is determined by the authenticated role'});
