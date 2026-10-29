@@ -313,8 +313,23 @@ app.delete('/api/sops/:id', requireAdmin, async (req, res) => {
   res.json({ message: 'SOP deleted' });
 });
 
-// ── HEALTH ────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+// ── HEALTH / READINESS ─────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// Deployment smoke check: verifies the database connection and that the
+// SECL safety migration has been applied. It never returns schema/data details.
+app.get('/ready', async (req, res) => {
+  try {
+    const { error } = await supabase.from('areas').select('id', { head: true, count: 'exact' }).limit(1);
+    if (error) return res.status(503).json({ status: 'not_ready', error: 'Database or safety schema is unavailable' });
+    return res.json({ status: 'ready' });
+  } catch {
+    return res.status(503).json({ status: 'not_ready', error: 'Database or safety schema is unavailable' });
+  }
+});
 
 
 // ════════════════════════════════════════════════════════════════
@@ -630,4 +645,22 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
     mine_counts:(mines||[]).map(m=>({mine_id:m.id,mine_name:m.name,total_incidents:rows.filter(i=>i.mine_id===m.id).length}))});
 });
 
-app.listen(PORT, () => console.log(`MineGuard API running on port ${PORT}`));
+// Authenticated and operational responses must not be cached by shared proxies.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
+app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err && err.message === 'Origin not allowed by CORS') return res.status(403).json({ error: 'Origin not allowed' });
+  if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
+  if (err instanceof SyntaxError && err.status === 400 && Object.prototype.hasOwnProperty.call(err, 'body')) {
+    return res.status(400).json({ error: 'Invalid JSON request body' });
+  }
+  console.error('Unhandled MineGuard API error:', err && err.name ? err.name : 'Error');
+  return res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(PORT, () => console.log(`MineGuard API listening on port ${PORT}; environment=${isProduction ? 'production' : 'non-production'}`));
