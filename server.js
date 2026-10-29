@@ -4,29 +4,59 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole } = require('./safety-policy');
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = Number(process.env.PORT || 4000);
+const isProduction = process.env.NODE_ENV === 'production';
+const requiredEnv = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET'];
+const missingEnv = requiredEnv.filter(key => !String(process.env[key] || '').trim());
+if (missingEnv.length) throw new Error('Missing required environment variables: ' + missingEnv.join(', '));
+if (!/^https:\/\//i.test(process.env.SUPABASE_URL)) throw new Error('SUPABASE_URL must use HTTPS');
+if (process.env.JWT_SECRET.length < 32 || /replace_with|change_me|your_secret/i.test(process.env.JWT_SECRET)) {
+  throw new Error('JWT_SECRET must be a unique random secret of at least 32 characters');
+}
+if (isProduction && !String(process.env.FRONTEND_URL || '').trim()) {
+  throw new Error('FRONTEND_URL must contain the exact deployed frontend origin(s) in production');
+}
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be a valid TCP port');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false }
+});
 
+app.disable('x-powered-by');
+if (isProduction) app.set('trust proxy', 1);
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+const configuredOrigins = String(process.env.FRONTEND_URL || '')
+  .split(',').map(value => value.trim()).filter(Boolean);
+const developmentOrigins = isProduction ? [] : ['http://localhost:3000', 'http://127.0.0.1:5500', 'http://localhost:5500'];
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    'http://localhost:3000',
-    'http://127.0.0.1:5500',
-    'https://mineguard-frontend-git-main-tajendrasingh01s-projects.vercel.app',
-    'https://mineguard-frontend.vercel.app'
-  ],
-  credentials: true
+  origin(origin, callback) {
+    if (!origin || configuredOrigins.includes(origin) || developmentOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin not allowed by CORS'));
+  },
+  credentials: false,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type']
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '10mb', strict: true }));
+app.use(express.urlencoded({ extended: true, limit: '1mb', parameterLimit: 1000 }));
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' }
+});
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Registration limit reached. Please try again later.' }
+});
+app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/register', registrationLimiter);
 
 // ── AUTH MIDDLEWARE ───────────────────────────────────────────
 function requireAuth(req, res, next) {
@@ -42,10 +72,18 @@ function requireAuth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  requireAuth(req, res, () => {
-    if (req.user.role !== 'admin')
-      return res.status(403).json({ error: 'Admin access required' });
-    next();
+  requireAuth(req, res, async () => {
+    try {
+      const { data: principal, error } = await supabase.from('users')
+        .select('id, role, is_active').eq('id', req.user.id).maybeSingle();
+      if (error) return res.status(503).json({ error: 'Unable to verify administrator permissions' });
+      if (!principal || principal.is_active === false) return res.status(401).json({ error: 'Account is unavailable' });
+      if (principal.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+      req.adminPrincipal = principal;
+      next();
+    } catch {
+      return res.status(503).json({ error: 'Unable to verify administrator permissions' });
+    }
   });
 }
 
@@ -54,9 +92,12 @@ function requireAdmin(req, res, next) {
 // ════════════════════════════════════════════════════════════════
 
 app.post('/api/auth/register', async (req, res) => {
-  const { worker_id, name, department, password } = req.body;
-  if (!worker_id || !name || !password)
-    return res.status(400).json({ error: 'worker_id, name, and password are required' });
+  const { worker_id, name, department, password } = req.body || {};
+  if (typeof worker_id !== 'string' || typeof name !== 'string' || typeof password !== 'string' ||
+      !worker_id.trim() || !name.trim() || password.length < 12 || password.length > 128 ||
+      worker_id.length > 100 || name.trim().length > 150) {
+    return res.status(400).json({ error: 'Valid worker_id and name are required; password must be 12–128 characters' });
+  }
 
   const { data: existing } = await supabase
     .from('users').select('id').eq('worker_id', worker_id).single();
@@ -69,7 +110,7 @@ app.post('/api/auth/register', async (req, res) => {
     .insert([{ worker_id, name, department: department || null, password_hash, role: 'worker' }])
     .select('id, worker_id, name, department, role').single();
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return res.status(500).json({ error: 'Unable to create account' });
 
   const token = jwt.sign(
     { id: data.id, worker_id: data.worker_id, name: data.name, role: data.role, department: data.department },
@@ -79,9 +120,10 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { worker_id, password } = req.body;
-  if (!worker_id || !password)
-    return res.status(400).json({ error: 'worker_id and password required' });
+  const { worker_id, password } = req.body || {};
+  if (typeof worker_id !== 'string' || typeof password !== 'string' ||
+      !worker_id.trim() || !password || worker_id.length > 100 || password.length > 128)
+    return res.status(400).json({ error: 'worker_id and password are required' });
 
   const { data: user, error } = await supabase
     .from('users').select('*').eq('worker_id', worker_id).single();
@@ -99,7 +141,19 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({ token, user: { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department } });
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => res.json({ user: req.user }));
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  try {
+    const { data: user, error } = await supabase.from('users')
+      .select('id,worker_id,name,department,role,assigned_mine_id,assigned_area_id,is_active')
+      .eq('id', req.user.id).maybeSingle();
+    if (error) return res.status(503).json({ error: 'Unable to verify account' });
+    if (!user || user.is_active === false) return res.status(401).json({ error: 'Account is unavailable' });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ user });
+  } catch {
+    return res.status(503).json({ error: 'Unable to verify account' });
+  }
+});
 
 // ════════════════════════════════════════════════════════════════
 // INCIDENTS
