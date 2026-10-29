@@ -48,6 +48,26 @@ create index if not exists incidents_mine_created_idx on public.incidents(mine_i
 create index if not exists incidents_status_created_idx on public.incidents(status,created_at desc);
 create index if not exists incidents_category_discipline_idx on public.incidents(category,discipline);
 create index if not exists incidents_assignee_idx on public.incidents(assignee_id);
+
+-- Expand legacy lowercase statuses while retaining old rows and their history.
+do $ declare c record; begin
+ for c in select conname from pg_constraint where conrelid='public.incidents'::regclass
+   and contype='c' and pg_get_constraintdef(oid) ilike '%status%'
+ loop execute format('alter table public.incidents drop constraint %I',c.conname); end loop;
+end $;
+alter table public.incidents add constraint incidents_status_allowed_check
+ check (status in ('open','under_review','action_assigned','escalated','resolved','closed'));
+alter table public.incidents add constraint incidents_category_allowed_check
+ check (category is null or category in ('Near Miss','Unsafe Act','Unsafe Condition'));
+alter table public.incidents add constraint incidents_discipline_allowed_check
+ check (discipline is null or discipline in ('Mining','Electrical & Mechanical'));
+alter table public.users add constraint users_scope_required_check check (
+ (role in ('MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER')
+   and assigned_mine_id is not null and assigned_area_id is null)
+ or (role='AREA_SAFETY_OFFICER' and assigned_area_id is not null and assigned_mine_id is null)
+ or (role='HQ_SAFETY_HEAD' and assigned_area_id is null and assigned_mine_id is null)
+ or role in ('worker','admin')
+);
 create table if not exists public.incident_comments (
  id uuid primary key default gen_random_uuid(), incident_id uuid not null references public.incidents(id) on delete restrict,
  author_id uuid not null references public.users(id) on delete restrict,
