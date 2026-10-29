@@ -33,7 +33,7 @@ async function main(){
    if(existing){report.matchedProjects++;if(existing.name!==name)report.conflicts.push({type:'project-name-differs',area:a.name,expected:name,existing:existing.name,id:existing.id});continue;}
    const elsewhere=(mines||[]).filter(m=>normalize(m.name)===normalize(name)&&m.area_id!==parent.id);
    if(elsewhere.length){report.conflicts.push({type:'project-parent-conflict',area:a.name,project:name,existing:elsewhere.map(m=>({id:m.id,area_id:m.area_id}))});continue;}
-   if(apply){const {data,error}=await db.from('mines').insert({area_id:parent.id,name,normalized_name:normalize(name),source_label:name,source_area_label:(a.sourceLabels||[])[0]||a.name}).select('id,area_id,name,normalized_name').single();if(error){report.errors.push({type:'insert-project',area:a.name,project:name,message:error.message});continue;}byKey.set(key,data);report.insertedProjects++;}
+   if(apply){const {data,error}=await db.from('mines').insert({area_id:parent.id,name,normalized_name:normalize(name),source_label:name,source_area_label:(a.name==='Korba' && name==='CENTRAL WORKSHOP')?'CWS Korba':a.name}).select('id,area_id,name,normalized_name').single();if(error){report.errors.push({type:'insert-project',area:a.name,project:name,message:error.message});continue;}byKey.set(key,data);report.insertedProjects++;}
   }
  }
  const [{data:finalAreas,error:fae},{data:finalMines,error:fme}]=await Promise.all([db.from('areas').select('id,name,normalized_name'),db.from('mines').select('id,area_id,name,normalized_name')]);
