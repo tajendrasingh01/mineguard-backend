@@ -105,9 +105,7 @@
     },
     {
       "name": "Korba",
-      "sourceLabels": [
-        "CWS Korba"
-      ],
+      "sourceLabels": [],
       "projects": [
         "AMBIKA OCP",
         "BAGDEWA",
