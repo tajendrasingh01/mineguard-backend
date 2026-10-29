@@ -139,7 +139,8 @@ begin
    raise exception 'Incident changed concurrently' using errcode='40001';
  end if;
  if p_new_status is distinct from current_incident.status
-    and p_new_status not in ('escalated') then
+    and not (p_action='ESCALATE' and p_new_status='escalated')
+    and not (p_action='ASSIGN' and p_new_status='action_assigned' and current_incident.status='under_review') then
    raise exception 'Forwarding cannot perform an arbitrary status transition' using errcode='22023';
  end if;
  update public.incidents
