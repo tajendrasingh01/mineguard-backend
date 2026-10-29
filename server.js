@@ -319,6 +319,12 @@ app.delete('/api/sops/:id', requireAdmin, async (req, res) => {
   res.json({ message: 'SOP deleted' });
 });
 
+// Deployment identity used by the frontend to detect an old API deployment.
+app.get('/api/version', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ service: 'mineguard-api', api_version: 'secl-safety-v1', commit: process.env.RENDER_GIT_COMMIT || null });
+});
+
 // ── HEALTH / READINESS ─────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.set('Cache-Control', 'no-store');
