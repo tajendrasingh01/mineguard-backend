@@ -530,9 +530,13 @@ app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res
   if(!period) return res.status(400).json({error:'Invalid reporting period'});
   const {data:areas,error:ae}=await supabase.from('areas').select('id,name,normalized_name').order('name');
   if(ae) return res.status(500).json({error:'Unable to load analytics'});
-  const {data:incidents,error:ie}=await supabase.from('incidents').select('id,area_id,mine_id,category,discipline,status,created_at,resolved_at,closed_at')
+  const {data:incidents,error:ie,count:incidentCount}=await supabase.from('incidents').select('id,area_id,mine_id,category,discipline,status,created_at,resolved_at,closed_at',{count:'exact'})
     .not('mine_id','is',null).gte('created_at',period.from).lte('created_at',period.to).limit(10000);
   if(ie) return res.status(500).json({error:'Unable to load analytics'});
+  if((incidentCount||0)>10000) return res.status(422).json({error:'Reporting period exceeds the 10,000-record analytics processing limit; narrow the reporting period or deploy database-side aggregate analytics.'});
+  const {data:mines,error:mineError}=await supabase.from('mines').select('id,name,area_id');
+  if(mineError) return res.status(500).json({error:'Unable to load Mine/Project analytics'});
+  const mineMap=new Map((mines||[]).map(m=>[m.id,m]));
   const rows=incidents||[];
   const byArea=(areas||[]).map(a=>{
     const list=rows.filter(i=>i.area_id===a.id), resolved=list.filter(i=>['resolved','closed'].includes(i.status));
@@ -546,7 +550,7 @@ app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res
   res.json({period,definitions:{resolution_rate:'Resolved or closed incidents divided by all incidents created in the selected period; null when denominator is zero.',average_resolution_hours:'Mean elapsed hours from incident creation to first recorded resolved_at; unresolved incidents and missing/invalid durations are excluded.'},
     totals:{incidents:rows.length,open:rows.filter(i=>!['resolved','closed'].includes(i.status)).length,escalated:rows.filter(i=>i.status==='escalated').length},
     area_ranking:byArea.sort((a,b)=>(b.resolution_rate_percent??-1)-(a.resolution_rate_percent??-1)),
-    hazard_frequency:{category:countBy('category'),discipline:countBy('discipline'),status:countBy('status')},mine_frequency:rows.reduce((acc,i)=>{const k=i.mine_id||'Unassigned';acc[k]=(acc[k]||0)+1;return acc;},{})});
+    hazard_frequency:{category:countBy('category'),discipline:countBy('discipline'),status:countBy('status')},mine_frequency:Object.values(rows.reduce((acc,i)=>{const mine=mineMap.get(i.mine_id);const k=i.mine_id||'Unassigned';if(!acc[k])acc[k]={mine_id:i.mine_id||null,mine_name:mine?.name||'Unassigned',area_id:mine?.area_id||i.area_id,total_incidents:0};acc[k].total_incidents++;return acc;},{}))});
 });
 
 app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (req,res) => {
@@ -558,9 +562,10 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
   if(ae||!area) return res.status(404).json({error:'Area not found'});
   const {data:mines,error:me}=await supabase.from('mines').select('id,name,area_id').eq('area_id',area.id).order('name');
   if(me) return res.status(500).json({error:'Unable to load Area'});
-  const {data:incidents,error:ie}=await supabase.from('incidents').select('id,mine_id,category,discipline,status,created_at,resolved_at')
+  const {data:incidents,error:ie,count:incidentCount}=await supabase.from('incidents').select('id,mine_id,category,discipline,status,created_at,resolved_at',{count:'exact'})
     .eq('area_id',area.id).not('mine_id','is',null).gte('created_at',period.from).lte('created_at',period.to).limit(10000);
   if(ie) return res.status(500).json({error:'Unable to load Area analytics'});
+  if((incidentCount||0)>10000) return res.status(422).json({error:'Area reporting period exceeds the 10,000-record processing limit; narrow the reporting period or deploy database-side aggregate analytics.'});
   const rows=incidents||[], resolved=rows.filter(i=>['resolved','closed'].includes(i.status));
   const durations=resolved.map(i=>i.resolved_at?((new Date(i.resolved_at)-new Date(i.created_at))/3600000):null).filter(n=>Number.isFinite(n)&&n>=0);
   res.json({area,period,definitions:{resolution_rate:'Resolved or closed incidents divided by all incidents created in the selected period; null when denominator is zero.',average_resolution_hours:'Mean elapsed hours from creation to first recorded resolution; unresolved or invalid durations excluded.'},
