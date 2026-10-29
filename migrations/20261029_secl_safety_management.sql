@@ -23,6 +23,11 @@ do $$ declare c record; begin
  loop execute format('alter table public.users drop constraint %I',c.conname); end loop;
 end $$;
 alter table public.users alter column role set default 'worker';
+do $ declare bad_roles text; begin
+ select string_agg(distinct role, ', ' order by role) into bad_roles
+ from public.users where role not in ('worker','admin','MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER');
+ if bad_roles is not null then raise exception 'Unmapped legacy user roles require manual reconciliation before migration: %', bad_roles; end if;
+end $;
 alter table public.users add constraint users_role_allowed_check check
 (role in ('worker','admin','MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER'));
 create unique index if not exists users_one_active_mine_manager_per_mine on public.users(assigned_mine_id)
@@ -54,6 +59,20 @@ do $ declare c record; begin
  for c in select conname from pg_constraint where conrelid='public.incidents'::regclass
    and contype='c' and pg_get_constraintdef(oid) ilike '%status%'
  loop execute format('alter table public.incidents drop constraint %I',c.conname); end loop;
+end $;
+-- Normalize known historical status spellings. Unknown values are reported, never silently discarded.
+update public.incidents set status=case
+ when lower(trim(coalesce(status,''))) in ('open','new') then 'open'
+ when lower(trim(coalesce(status,''))) in ('under_review','under review','in_review','in review','review') then 'under_review'
+ when lower(trim(coalesce(status,''))) in ('action_assigned','action assigned','assigned') then 'action_assigned'
+ when lower(trim(coalesce(status,''))) in ('escalated','escalate') then 'escalated'
+ when lower(trim(coalesce(status,''))) in ('resolved','resolve') then 'resolved'
+ when lower(trim(coalesce(status,''))) in ('closed','close') then 'closed'
+ else status end;
+do $ declare bad_statuses text; begin
+ select string_agg(distinct coalesce(status,'<NULL>'), ', ' order by coalesce(status,'<NULL>')) into bad_statuses
+ from public.incidents where status is null or status not in ('open','under_review','action_assigned','escalated','resolved','closed');
+ if bad_statuses is not null then raise exception 'Unmapped legacy incident statuses require manual reconciliation before migration: %', bad_statuses; end if;
 end $;
 alter table public.incidents add constraint incidents_status_allowed_check
  check (status in ('open','under_review','action_assigned','escalated','resolved','closed'));
