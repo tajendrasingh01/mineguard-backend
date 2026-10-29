@@ -74,6 +74,62 @@ begin
     if sqlerrm not like '%Forwarding history is append-only%' then raise; end if;
   end;
 
+  -- Role-scope CHECK constraint must reject an unscoped mine manager.
+  begin
+    insert into public.users(worker_id,name,role)
+      values('TEST-UNSCOPED-MANAGER','Unscoped Manager','MINE_MANAGER');
+    raise exception 'Database accepted a mine manager without a Mine assignment';
+  exception when check_violation then
+    null;
+  end;
+
+  -- Only one active Mine Manager may be assigned to the same Mine.
+  insert into public.users(worker_id,name,role,assigned_mine_id)
+    values('TEST-MANAGER-1','Manager One','MINE_MANAGER',v_mine_a);
+  begin
+    insert into public.users(worker_id,name,role,assigned_mine_id)
+      values('TEST-MANAGER-2','Manager Two','MINE_MANAGER',v_mine_a);
+    raise exception 'Database accepted duplicate active Mine Managers for one Mine';
+  exception when unique_violation then
+    null;
+  end;
+
+  -- Canonical status/category constraints reject malformed incident data.
+  begin
+    insert into public.incidents(incident_type,status,category,description)
+      values('Near Miss','not-a-status','Near Miss','invalid status fixture');
+    raise exception 'Database accepted an invalid incident status';
+  exception when check_violation then
+    null;
+  end;
+  begin
+    insert into public.incidents(incident_type,status,category,description)
+      values('Near Miss','open','not-a-category','invalid category fixture');
+    raise exception 'Database accepted an invalid incident category';
+  exception when check_violation then
+    null;
+  end;
+
+  -- The RPC must reject arbitrary transitions, even with a fresh version.
+  begin
+    perform public.mineguard_forward_incident_atomic(
+      v_incident_id,2,'closed',v_admin_id,v_admin_id,'admin','admin','FORWARD','invalid transition','{}'::jsonb
+    );
+    raise exception 'Atomic forwarding accepted an arbitrary status transition';
+  exception when sqlstate '22023' then
+    null;
+  end;
+  if (select status from public.incidents where id=v_incident_id) <> 'open' then
+    raise exception 'Rejected status transition changed incident state';
+  end if;
+
+  begin
+    delete from public.incident_forwarding_history where id=v_event_id;
+    raise exception 'Append-only forwarding history allowed DELETE';
+  exception when others then
+    if sqlerrm not like '%Forwarding history is append-only%' then raise; end if;
+  end;
+
   if has_function_privilege('anon','public.mineguard_forward_incident_atomic(uuid,integer,text,uuid,uuid,text,text,text,text,jsonb)','EXECUTE') then
     raise exception 'Anonymous role unexpectedly has execute privilege on atomic forwarding RPC';
   end if;
