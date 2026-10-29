@@ -488,6 +488,37 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
   } catch {res.status(500).json({error:'Unable to forward incident'});}
 });
 
+
+app.get('/api/safety/recipients', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal;
+  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Recipient lookup is not permitted for this role'});
+  if(!req.query.incident_id) return res.status(400).json({error:'incident_id is required'});
+  try {
+    const incident=await getIncidentForPrincipal(req.query.incident_id,p);
+    if(!incident) return res.status(404).json({error:'Incident not found'});
+    const roles=p.role==='MINE_MANAGER'?['LOCAL_SUPERVISOR','LOCAL_ENGINEER','AREA_SAFETY_OFFICER']:['MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER'];
+    const {data:users,error}=await supabase.from('users').select('id,worker_id,name,role,assigned_mine_id,assigned_area_id,is_active').in('role',roles).eq('is_active',true);
+    if(error) return res.status(500).json({error:'Unable to load authorized recipients'});
+    const recipients=[];
+    for(const u of users||[]) {
+      if(p.role==='MINE_MANAGER') {
+        if(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(u.role)&&u.assigned_mine_id===incident._mine.id) recipients.push(u);
+        if(u.role==='AREA_SAFETY_OFFICER'&&u.assigned_area_id===incident._mine.area_id) recipients.push(u);
+      } else {
+        if(u.role==='MINE_MANAGER'&&u.assigned_mine_id) {
+          const targetMine=await getMine(u.assigned_mine_id);
+          if(targetMine&&targetMine.area_id===p.assigned_area_id) recipients.push(u);
+        }
+        if(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(u.role)&&u.assigned_mine_id) {
+          const targetMine=await getMine(u.assigned_mine_id);
+          if(targetMine&&targetMine.area_id===p.assigned_area_id) recipients.push(u);
+        }
+      }
+    }
+    res.json({recipients:recipients.map(u=>({id:u.id,worker_id:u.worker_id,name:u.name,role:u.role}))});
+  } catch {res.status(500).json({error:'Unable to load authorized recipients'});}
+});
+
 app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res) => {
   if(req.principal.role!=='HQ_SAFETY_HEAD') return res.status(403).json({error:'HQ Safety Head access required'});
   const period=parsePeriod(req.query);
