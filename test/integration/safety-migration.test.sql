@@ -1,15 +1,15 @@
 -- Run after baseline-schema.sql and the SECL migration against disposable PostgreSQL.
 do $$
 declare
-  admin_id uuid;
-  incident_id uuid;
-  area_a uuid;
-  area_b uuid;
-  mine_a uuid;
-  event_id uuid;
-  result_json jsonb;
+  v_admin_id uuid;
+  v_incident_id uuid;
+  v_area_a uuid;
+  v_area_b uuid;
+  v_mine_a uuid;
+  v_event_id uuid;
+  v_result_json jsonb;
 begin
-  select id into admin_id from public.users where worker_id='TEST-ADMIN';
+  select id into v_admin_id from public.users where worker_id='TEST-ADMIN';
   if (select count(*) from public.areas) <> 0 then
     raise exception 'Expected an empty Areas table before fixture inserts';
   end if;
@@ -27,49 +27,48 @@ begin
   end if;
 
   insert into public.areas(name,normalized_name) values
-    ('Test Area A','test area a'),('Test Area B','test area b')
-    returning id into area_a;
-  select id into area_a from public.areas where normalized_name='test area a';
-  select id into area_b from public.areas where normalized_name='test area b';
+    ('Test Area A','test area a'),('Test Area B','test area b');
+  select id into v_area_a from public.areas where normalized_name='test area a';
+  select id into v_area_b from public.areas where normalized_name='test area b';
   insert into public.mines(area_id,name,normalized_name)
-    values(area_a,'Test Mine A','test mine a') returning id into mine_a;
+    values(v_area_a,'Test Mine A','test mine a') returning id into v_mine_a;
 
   insert into public.incidents(incident_type,status,description,mine_id)
-    values('Near Miss','open','hierarchy auto-fill fixture',mine_a) returning id into incident_id;
-  if (select area_id from public.incidents where id=incident_id) <> area_a then
+    values('Near Miss','open','hierarchy auto-fill fixture',v_mine_a) returning id into v_incident_id;
+  if (select area_id from public.incidents where id=v_incident_id) <> v_area_a then
     raise exception 'Incident area was not derived from its mine';
   end if;
 
   begin
     insert into public.incidents(incident_type,status,description,area_id,mine_id)
-      values('Near Miss','open','mismatched hierarchy fixture',area_b,mine_a);
+      values('Near Miss','open','mismatched hierarchy fixture',v_area_b,v_mine_a);
     raise exception 'Hierarchy trigger accepted a mismatched Area/Mine';
   exception when others then
     if sqlerrm not like '%must match the selected mine parent Area%' then raise; end if;
   end;
 
-  result_json := public.mineguard_forward_incident_atomic(
-    incident_id,1,'open',admin_id,admin_id,'admin','admin','FORWARD','CI atomic forwarding check','{"test":true}'::jsonb
+  v_result_json := public.mineguard_forward_incident_atomic(
+    v_incident_id,1,'open',v_admin_id,v_admin_id,'admin','admin','FORWARD','CI atomic forwarding check','{"test":true}'::jsonb
   );
-  if (result_json #>> '{incident,version}')::integer <> 2 then
+  if (v_result_json #>> '{incident,version}')::integer <> 2 then
     raise exception 'Atomic forward did not increment incident version';
   end if;
-  if (select count(*) from public.incident_forwarding_history where incident_id=incident_id) <> 1 then
+  if (select count(*) from public.incident_forwarding_history h where h.incident_id=v_incident_id) <> 1 then
     raise exception 'Atomic forward did not append exactly one history row';
   end if;
 
   begin
     perform public.mineguard_forward_incident_atomic(
-      incident_id,1,'open',admin_id,admin_id,'admin','admin','FORWARD','stale version','{}'::jsonb
+      v_incident_id,1,'open',v_admin_id,v_admin_id,'admin','admin','FORWARD','stale version','{}'::jsonb
     );
     raise exception 'Stale optimistic-lock version was accepted';
   exception when sqlstate '40001' then
     null;
   end;
 
-  select id into event_id from public.incident_forwarding_history where incident_id=incident_id limit 1;
+  select h.id into v_event_id from public.incident_forwarding_history h where h.incident_id=v_incident_id limit 1;
   begin
-    update public.incident_forwarding_history set comments='tampered' where id=event_id;
+    update public.incident_forwarding_history set comments='tampered' where id=v_event_id;
     raise exception 'Append-only forwarding history allowed UPDATE';
   exception when others then
     if sqlerrm not like '%Forwarding history is append-only%' then raise; end if;
