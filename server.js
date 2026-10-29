@@ -58,6 +58,12 @@ const registrationLimiter = rateLimit({
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth/register', registrationLimiter);
 
+// Authenticated API responses must not be cached by shared proxies.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // ── AUTH MIDDLEWARE ───────────────────────────────────────────
 function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
@@ -643,12 +649,6 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
     resolution_rate_percent:rows.length?Math.round(resolved.length/rows.length*10000)/100:null,
     average_resolution_hours:durations.length?Math.round(durations.reduce((x,y)=>x+y,0)/durations.length*100)/100:null,
     mine_counts:(mines||[]).map(m=>({mine_id:m.id,mine_name:m.name,total_incidents:rows.filter(i=>i.mine_id===m.id).length}))});
-});
-
-// Authenticated and operational responses must not be cached by shared proxies.
-app.use('/api', (req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  next();
 });
 
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
