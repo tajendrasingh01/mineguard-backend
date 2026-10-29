@@ -463,6 +463,19 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
       if(p.role==='AREA_SAFETY_OFFICER' && target.assigned_area_id!==p.assigned_area_id && target.assigned_mine_id===null)
         return res.status(403).json({error:'Destination is outside the assigned Area'});
     }
+    if(action==='ESCALATE' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('escalated'))
+      return res.status(409).json({error:'Incident cannot be escalated from its current status'});
+    if(p.role==='AREA_SAFETY_OFFICER') {
+      if(!['LOCAL_SUPERVISOR','LOCAL_ENGINEER','MINE_MANAGER'].includes(target.role))
+        return res.status(403).json({error:'Area forwarding destination role is not permitted'});
+      if(target.assigned_mine_id) {
+        const targetMine=await getMine(target.assigned_mine_id);
+        if(!targetMine || targetMine.area_id!==p.assigned_area_id)
+          return res.status(403).json({error:'Destination Mine/Project is outside the assigned Area'});
+      } else if(target.assigned_area_id!==p.assigned_area_id) {
+        return res.status(403).json({error:'Destination is outside the assigned Area'});
+      }
+    }
     const newStatus=action==='ESCALATE'?'escalated':incident.status;
     const {data:updated,error:ue}=await supabase.from('incidents').update({assignee_id:target.id,status:newStatus,updated_at:new Date().toISOString(),version:(incident.version||1)+1}).eq('id',incident.id).eq('version',incident.version||1).select('id,status,assignee_id,version').maybeSingle();
     if(ue||!updated) return res.status(409).json({error:'Incident changed concurrently or could not be assigned'});
