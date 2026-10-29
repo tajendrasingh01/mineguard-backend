@@ -21,7 +21,6 @@ All require a bearer token and a database-backed active safety role:
 - `GET /api/safety/recipients?incident_id=` (returns only recipients permitted for that incident and role)
 - `GET /api/safety/analytics/hq?from=&to=`
 - `GET /api/safety/analytics/area/:id?from=&to=`
-- `GET /api/safety/analytics/area/:id`
 
 Existing auth, legacy incident/admin and SOP routes remain for compatibility. Legacy admin deletion remains a residual risk to disable after an approved migration plan. Public self-registration creates only legacy worker accounts.
 
@@ -36,7 +35,7 @@ Existing auth, legacy incident/admin and SOP routes remain for compatibility. Le
 Mine roles: `MINE_SO_MINING`, `MINE_SO_EM`, `MINE_MANAGER`, `LOCAL_SUPERVISOR`, `LOCAL_ENGINEER`; Area role: `AREA_SAFETY_OFFICER`; HQ role: `HQ_SAFETY_HEAD`. Unique partial indexes limit active manager/Area Safety Officer/HQ assignments. No fake users are seeded. Statuses are stored lowercase: open, under_review, action_assigned, escalated, resolved, closed. Resolution rate = resolved/closed divided by all incidents created in the selected period. Average resolution hours excludes unresolved, missing, or invalid durations.
 
 ## Security and known gaps
-RLS is enabled without permissive browser policies. Service-role access bypasses RLS, so the API must authorize every operation. CORS is not authorization. Forwarding history rejects UPDATE/DELETE. The current forwarding endpoint uses multiple Supabase requests rather than one database transaction; if history insertion fails after assignment update, manual reconciliation is needed. Implement a transactional database RPC before production. Test cross-scope negative cases, workflow concurrency, CORS, and account provisioning before deployment.
+RLS is enabled without permissive browser policies. Service-role access bypasses RLS, so the API must authorize every operation. CORS is not authorization. Forwarding history rejects UPDATE/DELETE. Forwarding and append-only history now use the `mineguard_forward_incident_atomic` PostgreSQL RPC, which locks the incident row and checks the expected version before committing both changes. Apply the migration before enabling this endpoint. Test cross-scope negative cases, workflow concurrency, CORS, and account provisioning before deployment.
 
 ## Tests and deployment
 Run `npm test` for manifest checks. Database migration/seed checks require a non-production Supabase instance. Render configuration is in `render.yaml`. No production deployment should occur without explicit authorization.
