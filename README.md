@@ -18,6 +18,7 @@ All require a bearer token and a database-backed active safety role:
 - `POST /api/safety/incidents/:id/comments`
 - `PATCH /api/safety/incidents/:id/status`
 - `POST /api/safety/incidents/:id/forward`
+- `GET /api/safety/recipients?incident_id=` (returns only recipients permitted for that incident and role)
 - `GET /api/safety/analytics/hq?from=&to=`
 - `GET /api/safety/analytics/area/:id`
 
