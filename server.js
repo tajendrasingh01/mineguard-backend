@@ -477,14 +477,24 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
       }
     }
     const newStatus=action==='ESCALATE'?'escalated':incident.status;
-    const {data:updated,error:ue}=await supabase.from('incidents').update({assignee_id:target.id,status:newStatus,updated_at:new Date().toISOString(),version:(incident.version||1)+1}).eq('id',incident.id).eq('version',incident.version||1).select('id,status,assignee_id,version').maybeSingle();
-    if(ue||!updated) return res.status(409).json({error:'Incident changed concurrently or could not be assigned'});
-    const {data:history,error:he}=await supabase.from('incident_forwarding_history').insert({
-      incident_id:incident.id,actor_id:p.id,from_user_id:incident.assignee_id||null,to_user_id:target.id,
-      from_role:p.role,to_role:target.role,action,comments:comment||null,context:{mine_id:incident._mine.id,area_id:incident._mine.area_id}
-    }).select('id,incident_id,actor_id,from_user_id,to_user_id,from_role,to_role,action,comments,context,created_at').single();
-    if(he) return res.status(500).json({error:'Assignment update requires reconciliation: forwarding history could not be saved'});
-    res.json({incident:updated,forwarding_event:history});
+    const {data:result,error:rpcError}=await supabase.rpc('mineguard_forward_incident_atomic',{
+      p_incident_id:incident.id,
+      p_expected_version:incident.version||1,
+      p_new_status:newStatus,
+      p_assignee_id:target.id,
+      p_actor_id:p.id,
+      p_from_role:p.role,
+      p_to_role:target.role,
+      p_action:action,
+      p_comments:comment||null,
+      p_context:{mine_id:incident._mine.id,area_id:incident._mine.area_id}
+    });
+    if(rpcError) {
+      if(rpcError.code==='40001') return res.status(409).json({error:'Incident changed concurrently; reload and retry'});
+      if(rpcError.code==='P0002') return res.status(404).json({error:'Incident not found'});
+      return res.status(409).json({error:'Forwarding could not be committed atomically'});
+    }
+    res.json({incident:result.incident,forwarding_event:result.forwarding_event});
   } catch {res.status(500).json({error:'Unable to forward incident'});}
 });
 
