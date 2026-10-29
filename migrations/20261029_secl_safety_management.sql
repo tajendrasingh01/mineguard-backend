@@ -140,7 +140,7 @@ create or replace function public.mineguard_forward_incident_atomic(
 language plpgsql
 security invoker
 set search_path = public
-as $
+as $$
 declare
  current_incident public.incidents%rowtype;
  updated_incident public.incidents%rowtype;
@@ -173,7 +173,7 @@ begin
  ) returning * into forwarding_event;
  return jsonb_build_object('incident',to_jsonb(updated_incident),'forwarding_event',to_jsonb(forwarding_event));
 end;
-$;
+$$;
 revoke all on function public.mineguard_forward_incident_atomic(uuid,integer,text,uuid,uuid,text,text,text,text,jsonb) from public, anon, authenticated;
 grant execute on function public.mineguard_forward_incident_atomic(uuid,integer,text,uuid,uuid,text,text,text,text,jsonb) to service_role;
 
