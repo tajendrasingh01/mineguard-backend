@@ -1,7 +1,7 @@
 require('dotenv').config();
 const {createClient}=require('@supabase/supabase-js');
 const manifest=require('./secl-area-project-manifest.json');
-const normalize=v=>String(v||'').normalize('NFKC').trim().replace(/\\s+/g,' ').toLocaleLowerCase('en-IN');
+const normalize=v=>String(v||'').normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('en-IN');
 const aliases=new Map([['bisrampur','bishrampur'],['jamuna kotma','jamuna & kotma'],['cws korba','korba']]);
 async function main(){
  if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_URL and backend-only SUPABASE_SERVICE_KEY are required');
