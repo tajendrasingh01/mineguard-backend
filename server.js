@@ -439,32 +439,41 @@ app.get('/api/org/mines', requireAuth, safetyPrincipal, async (req,res) => {
 
 app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal;
-  if(!['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)) return res.status(403).json({error:'Only assigned Safety Officers can create field observations'});
+  if(!['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)) return res.status(403).json({error:'Only assigned Safety Officers can submit incident reports'});
   const category=req.body.category, discipline=disciplineForRole(p.role);
-  if(!CATEGORIES.has(category)||!String(req.body.description||'').trim()||String(req.body.description).length>10000)
-    return res.status(400).json({error:'A valid category and description are required'});
+  const description=String(req.body.description||'').trim();
+  if(!CATEGORIES.has(category)||!description||description.length>10000)
+    return res.status(400).json({error:'A valid report category and description are required'});
   if(req.body.discipline && req.body.discipline!==discipline) return res.status(403).json({error:'Discipline is determined by the authenticated role'});
+  const severityValues=new Set(['none','nearMiss','minor','serious','critical','fatality']);
+  const severity=severityValues.has(req.body.severity)?req.body.severity:(category==='Near Miss'?'nearMiss':'minor');
+  const injured=Number(req.body.persons_injured??0);
+  if(!Number.isInteger(injured)||injured<0||injured>999) return res.status(400).json({error:'Persons injured must be a whole number between 0 and 999'});
+  const photos=req.body.photos==null?null:String(req.body.photos);
+  if(photos&&photos.length>7_000_000) return res.status(413).json({error:'Photo evidence exceeds the permitted upload size'});
   try {
     const mine=await getMine(p.assigned_mine_id);
     if(!mine) return res.status(403).json({error:'No valid Mine/Project assignment'});
     const now=new Date();
-    const severity=category==='Near Miss'?'nearMiss':'minor';
     const {data,error}=await supabase.from('incidents').insert([{
       reporter_id:p.id, reporter_worker_id:p.worker_id, reporter_name:p.name,
-      incident_type:category, category, discipline, area_id:mine.area_id, mine_id:mine.id,
+      incident_type:String(req.body.incident_type||category).slice(0,200), category, discipline,
+      area_id:mine.area_id, mine_id:mine.id,
       date_of_incident:req.body.date_of_incident||now.toISOString().slice(0,10),
       time_of_incident:req.body.time_of_incident||null,
       location_zone:String(req.body.location_zone||mine.name).slice(0,200),
       location_detail:req.body.location_detail?String(req.body.location_detail).slice(0,500):null,
-      severity, persons_injured:0, description:String(req.body.description).trim(),
+      severity, persons_injured:injured, description,
       immediate_actions:req.body.immediate_actions?String(req.body.immediate_actions).slice(0,5000):null,
-      ppe_worn:'unknown',sop_followed:'unknown',status:'open'
+      ppe_worn:String(req.body.ppe_worn||'unknown').slice(0,30),
+      sop_followed:String(req.body.sop_followed||'unknown').slice(0,30),
+      witnesses:req.body.witnesses?String(req.body.witnesses).slice(0,1000):null,
+      photos, status:'open'
     }]).select('id,incident_ref,area_id,mine_id,category,discipline,status,created_at').single();
     if(error) return res.status(500).json({error:'Unable to save incident'});
     res.status(201).json({incident:data});
   } catch { res.status(500).json({error:'Unable to resolve assigned Mine/Project'}); }
 });
-
 app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal, period=parsePeriod(req.query);
   if(!period) return res.status(400).json({error:'Invalid reporting period'});
