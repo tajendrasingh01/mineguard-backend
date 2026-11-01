@@ -379,7 +379,11 @@ async function safetyPrincipal(req, res, next) {
       .select('id,worker_id,name,department,role,assigned_mine_id,assigned_area_id,is_active')
       .eq('id', req.user.id).maybeSingle();
     if (error || !data || data.is_active === false) return res.status(401).json({error:'Account is unavailable'});
-    if (!SAFETY_ROLES.has(data.role)) return res.status(403).json({error:'Safety-management role required'});
+    // The isolated test tenant's single legacy system-admin account is the
+    // designated HQ safety dashboard operator. Keep this mapping server-side;
+    // never trust a role supplied by the browser or JWT.
+    if (data.worker_id === 'ncph' && data.role === 'admin') data.role = 'HQ_SAFETY_HEAD';
+    if (!SAFETY_ROLES.has(data.role)) return res.status(403).json({error:'Your account is not assigned a SECL safety-management role. Ask the system administrator to assign your Mine/Area safety role.'});
     req.principal = data;
     next();
   } catch {
