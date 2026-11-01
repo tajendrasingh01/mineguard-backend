@@ -12,7 +12,7 @@ const STATUS_TRANSITIONS = Object.freeze({
 });
 const STATUS_VALUES = new Set(Object.keys(STATUS_TRANSITIONS));
 const DISCIPLINES = new Set(['Mining','Electrical & Mechanical']);
-const CATEGORIES = new Set(['Near Miss','Unsafe Act','Unsafe Condition']);
+const CATEGORIES = new Set(['Unsafe Practice','Near Miss','Unsafe Acts','Incident Reporting']);
 function canReadMine(principal, mine) {
   if (!principal || !mine) return false;
   if (principal.role === 'HQ_SAFETY_HEAD') return true;
