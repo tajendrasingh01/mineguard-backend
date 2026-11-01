@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "areas": [
+    {
+      "name": "Baikunthpur",
+      "projects": [
+        "Churcha RO",
+        "JHILIMILI",
+        "KATKONA R.O",
+        "PANDAVAPARA"
+      ]
+    },
+    {
+      "name": "Bhatgaon",
+      "projects": [
+        "BHATGAON UG",
+        "JAGANNATH OC",
+        "KALYANI UG",
+        "MADANNAGAR OC",
+        "MAHAMAYA OC",
+        "NAWAPARA UG",
+        "SHIVANI UG"
+      ]
+    },
+    {
+      "name": "Bishrampur",
+      "sourceLabels": [
+        "BISRAMPUR"
+      ],
+      "projects": [
+        "AMAGAON",
+        "AMERA",
+        "BALRAMPUR",
+        "GAYATRI",
+        "KETKI UG",
+        "KUMDA NEW",
+        "REHAR"
+      ]
+    },
+    {
+      "name": "Chirimiri",
+      "projects": [
+        "Chirimiri OC",
+        "KURASIA COLLIERY",
+        "NORTH CHIRIMIRI PONRI HILL -NCPH",
+        "RANI ATTARI",
+        "VIJAYA WEST UG"
+      ]
+    },
+    {
+      "name": "Dipka",
+      "projects": [
+        "DIPKA PROJECT"
+      ]
+    },
+    {
+      "name": "Gevra",
+      "projects": [
+        "GEVRA PROJECT"
+      ]
+    },
+    {
+      "name": "Hasdeo",
+      "projects": [
+        "BEHRABANDH",
+        "BIJURI",
+        "CENTRAL_HOSPITAL_HSD",
+        "HALDIBARI UG",
+        "JHIRIA",
+        "JHIRIA WEST OC",
+        "KURJA",
+        "MRS Manendragarh",
+        "RAJNAGAR OC",
+        "RAJNAGAR RO",
+        "Sheetaldhara Kurja UG Mine",
+        "WEST JKD"
+      ]
+    },
+    {
+      "name": "Jamuna & Kotma",
+      "sourceLabels": [
+        "Jamuna Kotma"
+      ],
+      "projects": [
+        "Amadand Bartarai UG",
+        "AMADAND OC",
+        "BHADRA",
+        "Govinda Siding",
+        "JAMUNA 1&2",
+        "JAMUNA 9&10 MINE",
+        "MEERA INCLINE",
+        "WORKSHOP JAMUANA"
+      ]
+    },
+    {
+      "name": "Johilla",
+      "projects": [
+        "KANCHAN OC",
+        "NOWROZABAD WEST UG",
+        "PALI UG",
+        "PIPARIYA UG",
+        "UMARIA UG",
+        "Vindhya UG"
+      ]
+    },
+    {
+      "name": "Korba",
+      "sourceLabels": [],
+      "projects": [
+        "AMBIKA OCP",
+        "BAGDEWA",
+        "BALGI",
+        "BANKI UG",
+        "CENTRAL WORKSHOP",
+        "DHELWADIAH",
+        "MANIKPUR OC",
+        "RAJGAMAR",
+        "SARAIPALI",
+        "SINGHALI",
+        "SURAKACHHAR"
+      ]
+    },
+    {
+      "name": "Kusmunda",
+      "projects": [
+        "KUSMUNDA PROJECT"
+      ]
+    },
+    {
+      "name": "Raigarh",
+      "projects": [
+        "BAROUD OC",
+        "CHHAL OC",
+        "DURGAPUR OC",
+        "JAMPALI OC",
+        "Pelma OC",
+        "PORDA CHIMTA PANI"
+      ]
+    },
+    {
+      "name": "Sohagpur",
+      "projects": [
+        "AMLAI OCM",
+        "BANGWAR UG",
+        "BURHAR-SHARDA OC",
+        "DAMINI UG",
+        "DHANPURI OCM",
+        "KHAIRAH UG",
+        "RAJENDRA UG",
+        "RAMPUR BATURA",
+        "RAMPUR BATURA OC",
+        "Regional Workshop"
+      ]
+    }
+  ]
+}
