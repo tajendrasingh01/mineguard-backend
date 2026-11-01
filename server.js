@@ -155,7 +155,8 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     if (error) return res.status(503).json({ error: 'Unable to verify account' });
     if (!user || user.is_active === false) return res.status(401).json({ error: 'Account is unavailable' });
     res.set('Cache-Control', 'no-store');
-    return res.json({ user });
+    const dashboardUser = user.worker_id === 'ncph' && user.role === 'admin' ? { ...user, role: 'HQ_SAFETY_HEAD' } : user;
+    return res.json({ user: dashboardUser });
   } catch {
     return res.status(503).json({ error: 'Unable to verify account' });
   }
