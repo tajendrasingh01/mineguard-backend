@@ -657,7 +657,9 @@ app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res
       average_resolution_hours:durations.length?Math.round(durations.reduce((x,y)=>x+y,0)/durations.length*100)/100:null};
   });
   const countBy=key=>rows.reduce((acc,i)=>{const k=i[key]||'Unclassified';acc[k]=(acc[k]||0)+1;return acc;},{});
-  res.json({period,definitions:{resolution_rate:'Resolved or closed incidents divided by all incidents created in the selected period; null when denominator is zero.',average_resolution_hours:'Mean elapsed hours from incident creation to first recorded resolved_at; unresolved incidents and missing/invalid durations are excluded.'},
+  const trendMap=rows.reduce((acc,i)=>{const day=String(i.created_at||'').slice(0,10);if(day){acc[day]=(acc[day]||0)+1;}return acc;},{});
+  const trend=[];for(let d=new Date(period.from);d<=new Date(period.to);d.setUTCDate(d.getUTCDate()+1)){const day=d.toISOString().slice(0,10);trend.push({date:day,count:trendMap[day]||0});}
+  res.json({period,trend,definitions:{resolution_rate:'Resolved or closed incidents divided by all incidents created in the selected period; null when denominator is zero.',average_resolution_hours:'Mean elapsed hours from incident creation to first recorded resolved_at; unresolved incidents and missing/invalid durations are excluded.'},
     totals:{incidents:rows.length,open:rows.filter(i=>!['resolved','closed'].includes(i.status)).length,escalated:rows.filter(i=>i.status==='escalated').length},
     area_ranking:byArea.sort((a,b)=>(b.resolution_rate_percent??-1)-(a.resolution_rate_percent??-1)),
     hazard_frequency:{category:countBy('category'),discipline:countBy('discipline'),status:countBy('status')},mine_frequency:Object.values(rows.reduce((acc,i)=>{const mine=mineMap.get(i.mine_id);const k=i.mine_id||'Unassigned';if(!acc[k])acc[k]={mine_id:i.mine_id||null,mine_name:mine?.name||'Unassigned',area_id:mine?.area_id||i.area_id,total_incidents:0};acc[k].total_incidents++;return acc;},{}))});
