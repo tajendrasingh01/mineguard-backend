@@ -458,6 +458,7 @@ app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) 
     const {data,error}=await supabase.from('incidents').insert([{
       reporter_id:p.id, reporter_worker_id:p.worker_id, reporter_name:p.name,
       incident_type:String(req.body.incident_type||category).slice(0,200), category, discipline,
+      supervisor_on_duty:req.body.supervisor_on_duty?String(req.body.supervisor_on_duty).slice(0,150):null,
       area_id:mine.area_id, mine_id:mine.id,
       date_of_incident:req.body.date_of_incident||now.toISOString().slice(0,10),
       time_of_incident:req.body.time_of_incident||null,
