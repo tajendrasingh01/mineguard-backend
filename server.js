@@ -496,8 +496,9 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
     q=q.eq('status',req.query.status);
   }
   if(req.query.category) {
-    if(!CATEGORIES.has(req.query.category)) return res.status(400).json({error:'Invalid category filter'});
-    q=q.eq('category',req.query.category);
+    if(req.query.category==='Unsafe Act') q=q.in('category',['Unsafe Act','Unsafe Acts','Unsafe Practice']);
+    else if(!CATEGORIES.has(req.query.category)) return res.status(400).json({error:'Invalid category filter'});
+    else q=q.eq('category',req.query.category);
   }
   if(req.query.mine_id) q=q.eq('mine_id',req.query.mine_id);
   if(req.query.area_id) {
