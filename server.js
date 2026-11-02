@@ -510,6 +510,18 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
   res.json({incidents:data||[],total:count||0,limit,offset,from:period.from,to:period.to});
 });
 
+app.get('/api/safety/incidents/mine', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal, period=parsePeriod(req.query);
+  if(!period) return res.status(400).json({error:'Invalid reporting period'});
+  const {data,error,count}=await supabase.from('incidents')
+    .select('id,incident_ref,incident_type,category,discipline,date_of_incident,time_of_incident,location_zone,location_detail,severity,status,created_at,updated_at,resolved_at,closed_at',{count:'exact'})
+    .eq('reporter_id',p.id).not('mine_id','is',null)
+    .gte('created_at',period.from).lte('created_at',period.to)
+    .order('created_at',{ascending:false});
+  if(error) return res.status(500).json({error:'Unable to load your incident reports'});
+  res.json({incidents:data||[],total:count||0,from:period.from,to:period.to});
+});
+
 app.get('/api/safety/incidents/:id', requireAuth, safetyPrincipal, async (req,res) => {
   try {
     const incident=await getIncidentForPrincipal(req.params.id,req.principal);
