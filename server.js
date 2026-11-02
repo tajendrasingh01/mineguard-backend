@@ -522,6 +522,55 @@ app.get('/api/safety/incidents/mine', requireAuth, safetyPrincipal, async (req,r
   res.json({incidents:data||[],total:count||0,from:period.from,to:period.to});
 });
 
+app.get('/api/safety/analytics/mine', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal;
+  if(!['MINE_SO_MINING','MINE_SO_EM'].includes(p.role) || !p.assigned_mine_id)
+    return res.status(403).json({error:'Mine Safety Officer access required'});
+  try {
+    const mine=await getMine(p.assigned_mine_id);
+    if(!mine) return res.status(403).json({error:'No valid Mine/Project assignment'});
+    const {data:rows,error}=await supabase.from('incidents')
+      .select('id,incident_ref,incident_type,category,discipline,severity,status,date_of_incident,time_of_incident,location_zone,location_detail,created_at')
+      .eq('mine_id',mine.id).order('created_at',{ascending:false}).limit(10000);
+    if(error) return res.status(500).json({error:'Unable to load Mine dashboard'});
+    const incidents=rows||[];
+    const open=incidents.filter(i=>!['resolved','closed'].includes(i.status));
+    // Safe days reset only on an actual incident report, not on unsafe-condition observations or near misses.
+    const actual=incidents.filter(i=>i.category==='Incident Reporting' && i.date_of_incident);
+    const lastIncidentDate=actual.map(i=>i.date_of_incident).sort().at(-1)||null;
+    const today=new Date(); today.setUTCHours(0,0,0,0);
+    const last=lastIncidentDate?new Date(lastIncidentDate+'T00:00:00.000Z'):null;
+    const safeDays=last?Math.max(0,Math.floor((today-last)/86400000)):null;
+    res.json({
+      mine:{id:mine.id,name:mine.name,area_id:mine.area_id},
+      total_reports:incidents.length,
+      open_incidents:open.length,
+      safe_days:safeDays,
+      last_incident_date:lastIncidentDate,
+      safe_days_definition:'Calendar days since the most recent report categorized as Incident Reporting. Near misses and unsafe-condition observations do not reset this count.',
+      open_incidents_list:open.slice(0,100)
+    });
+  } catch { return res.status(500).json({error:'Unable to load Mine dashboard'}); }
+});
+
+app.get('/api/safety/incidents/mine/:id', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal;
+  if(!['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)) return res.status(403).json({error:'Safety Officer access required'});
+  try {
+    const {data,error}=await supabase.from('incidents').select('*').eq('id',req.params.id).eq('reporter_id',p.id).not('mine_id','is',null).maybeSingle();
+    if(error) return res.status(500).json({error:'Unable to load your report'});
+    if(!data) return res.status(404).json({error:'Report not found'});
+    const incident=await getIncidentForPrincipal(data.id,p);
+    if(!incident || incident.reporter_id!==p.id) return res.status(404).json({error:'Report not found'});
+    const [{data:comments,error:ce},{data:history,error:he}]=await Promise.all([
+      supabase.from('incident_comments').select('id,author_id,comment_text,context,created_at').eq('incident_id',incident.id).order('created_at'),
+      supabase.from('incident_forwarding_history').select('id,actor_id,from_user_id,to_user_id,from_role,to_role,action,comments,context,created_at').eq('incident_id',incident.id).order('created_at')
+    ]);
+    if(ce||he) return res.status(500).json({error:'Unable to load report history'});
+    res.json({incident:cleanIncident(incident),comments:comments||[],forwarding_history:history||[]});
+  } catch {res.status(500).json({error:'Unable to load your report'});}
+});
+
 app.get('/api/safety/incidents/:id', requireAuth, safetyPrincipal, async (req,res) => {
   try {
     const incident=await getIncidentForPrincipal(req.params.id,req.principal);
