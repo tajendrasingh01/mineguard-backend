@@ -31,5 +31,5 @@ test('workflow transitions are constrained and terminal closed state cannot tran
  assert.equal(STATUS_TRANSITIONS.resolved.has('escalated'),false);
 });
 test('incident categories are limited to canonical values',()=>{
- assert.deepEqual([...CATEGORIES].sort(),['Unsafe Practice','Near Miss','Unsafe Acts','Incident Reporting'].sort());
+ assert.deepEqual([...CATEGORIES].sort(),['Unsafe Practice','Near Miss','Unsafe Acts','Unsafe Act','Unsafe Condition','Incident Reporting'].sort());
 });
