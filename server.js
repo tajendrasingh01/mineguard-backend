@@ -285,7 +285,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 // GET all uploaded SOPs (available to all logged-in users)
 app.get('/api/sops', requireAuth, async (req, res) => {
   const { data, error } = await supabase.from('sops')
-    .select('id, sop_ref, title, category, description, file_name, file_type, file_data, rev, created_at')
+    .select('id, sop_ref, title, category, description, file_name, file_type, file_data, drive_url, rev, created_at')
     .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ sops: data });
@@ -293,10 +293,16 @@ app.get('/api/sops', requireAuth, async (req, res) => {
 
 // POST upload new SOP — admin only
 app.post('/api/sops', requireAdmin, async (req, res) => {
-  const { title, category, description, file_name, file_data, file_type, rev } = req.body;
+  const { title, category, description, file_name, file_data, file_type, drive_url, rev } = req.body;
 
   if (!title || !category)
     return res.status(400).json({ error: 'Title and category are required' });
+  if (drive_url) {
+    let parsed;
+    try { parsed = new URL(String(drive_url)); } catch { return res.status(400).json({ error: 'A valid Google Drive URL is required' }); }
+    if (parsed.protocol !== 'https:' || !['drive.google.com', 'docs.google.com'].includes(parsed.hostname))
+      return res.status(400).json({ error: 'SOP links must be HTTPS Google Drive or Google Docs URLs' });
+  }
 
   const { data, error } = await supabase.from('sops').insert([{
     title: title.toUpperCase(),
@@ -305,9 +311,10 @@ app.post('/api/sops', requireAdmin, async (req, res) => {
     file_name: file_name || null,
     file_data: file_data || null,   // base64 string
     file_type: file_type || null,
+    drive_url: drive_url || null,
     rev: rev || 'Rev 1.0',
     uploaded_by: req.user.id
-  }]).select('id, sop_ref, title, category, created_at').single();
+  }]).select('id, sop_ref, title, category, drive_url, created_at').single();
 
   if (error) return res.status(500).json({ error: error.message });
   res.status(201).json({ message: 'SOP uploaded successfully', sop: data });
@@ -503,6 +510,18 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
   res.json({incidents:data||[],total:count||0,limit,offset,from:period.from,to:period.to});
 });
 
+app.get('/api/safety/incidents/mine', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal, period=parsePeriod(req.query);
+  if(!period) return res.status(400).json({error:'Invalid reporting period'});
+  const {data,error,count}=await supabase.from('incidents')
+    .select('id,incident_ref,incident_type,category,discipline,date_of_incident,time_of_incident,location_zone,location_detail,severity,status,created_at,updated_at,resolved_at,closed_at',{count:'exact'})
+    .eq('reporter_id',p.id).not('mine_id','is',null)
+    .gte('created_at',period.from).lte('created_at',period.to)
+    .order('created_at',{ascending:false});
+  if(error) return res.status(500).json({error:'Unable to load your incident reports'});
+  res.json({incidents:data||[],total:count||0,from:period.from,to:period.to});
+});
+
 app.get('/api/safety/incidents/:id', requireAuth, safetyPrincipal, async (req,res) => {
   try {
     const incident=await getIncidentForPrincipal(req.params.id,req.principal);
@@ -531,6 +550,7 @@ app.post('/api/safety/incidents/:id/comments', requireAuth, safetyPrincipal, asy
 app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal, nextStatus=req.body.status;
   if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Status changes are not permitted for this role'});
+  if(['resolved','closed'].includes(nextStatus) && p.role!=='MINE_MANAGER') return res.status(403).json({error:'Incident resolution and closure are handled by the assigned Mine Manager'});
   if(!STATUS_VALUES.has(nextStatus)) return res.status(400).json({error:'Invalid status'});
   if(nextStatus==='escalated') return res.status(400).json({error:'Use the authorized forwarding workflow to escalate an incident'});
   try {
