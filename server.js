@@ -496,8 +496,9 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
     q=q.eq('status',req.query.status);
   }
   if(req.query.category) {
-    if(!CATEGORIES.has(req.query.category)) return res.status(400).json({error:'Invalid category filter'});
-    q=q.eq('category',req.query.category);
+    if(req.query.category==='Unsafe Act') q=q.in('category',['Unsafe Act','Unsafe Acts','Unsafe Practice']);
+    else if(!CATEGORIES.has(req.query.category)) return res.status(400).json({error:'Invalid category filter'});
+    else q=q.eq('category',req.query.category);
   }
   if(req.query.mine_id) q=q.eq('mine_id',req.query.mine_id);
   if(req.query.area_id) {
@@ -764,7 +765,7 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
     escalated_incidents:rows.filter(i=>i.status==='escalated').length,
     resolution_rate_percent:rows.length?Math.round(resolved.length/rows.length*10000)/100:null,
     average_resolution_hours:durations.length?Math.round(durations.reduce((x,y)=>x+y,0)/durations.length*100)/100:null,
-    mine_counts:(mines||[]).map(m=>({mine_id:m.id,mine_name:m.name,total_incidents:rows.filter(i=>i.mine_id===m.id).length}))});
+    mine_counts:(mines||[]).map(m=>{const mineRows=rows.filter(i=>i.mine_id===m.id);return {mine_id:m.id,mine_name:m.name,total_incidents:mineRows.length,unsafe_act:mineRows.filter(i=>['Unsafe Acts','Unsafe Practice','Unsafe Act'].includes(i.category)).length,unsafe_condition:mineRows.filter(i=>['Unsafe Condition','Unsafe Conditions'].includes(i.category)).length,near_miss:mineRows.filter(i=>i.category==='Near Miss').length,unresolved_incidents:mineRows.filter(i=>!['resolved','closed'].includes(i.status)).length};})});
 });
 
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
