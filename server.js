@@ -549,7 +549,8 @@ app.post('/api/safety/incidents/:id/comments', requireAuth, safetyPrincipal, asy
 
 app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal, nextStatus=req.body.status;
-  if(p.role!=='MINE_MANAGER') return res.status(403).json({error:'Incident resolution and closure are handled by the assigned Mine Manager'});
+  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Status changes are not permitted for this role'});
+  if(['resolved','closed'].includes(nextStatus) && p.role!=='MINE_MANAGER') return res.status(403).json({error:'Incident resolution and closure are handled by the assigned Mine Manager'});
   if(!STATUS_VALUES.has(nextStatus)) return res.status(400).json({error:'Invalid status'});
   if(nextStatus==='escalated') return res.status(400).json({error:'Use the authorized forwarding workflow to escalate an incident'});
   try {
