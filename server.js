@@ -141,7 +141,7 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid Worker ID or password' });
 
   const token = jwt.sign(
-    { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department },
+    { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department, assigned_mine_id: user.assigned_mine_id || null },
     process.env.JWT_SECRET, { expiresIn: '12h' }
   );
   res.json({ token, user: { id: user.id, worker_id: user.worker_id, name: user.name, role: user.role, department: user.department } });
@@ -283,7 +283,14 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 
 // GET all uploaded SOPs (available to all logged-in users)
-app.get('/api/sops', requireAuth, async (req, res) => {
+app.get('/api/sops', requireAuth, safetyPrincipal, async (req, res) => {
+  const p=req.principal;
+  if(!['MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER'].includes(p.role) || !p.assigned_mine_id)
+    return res.status(403).json({error:'SOP library is available only to NCPH Mine Safety Officers and Mine Manager'});
+  let mine;
+  try { mine=await getMine(p.assigned_mine_id); } catch { return res.status(503).json({error:'Unable to verify assigned Mine/Project'}); }
+  if(!mine || mine.normalized_name!=='north chirimiri ponri hill -ncph')
+    return res.status(403).json({error:'SOP library access is restricted to NCPH Mine personnel'});
   const { data, error } = await supabase.from('sops')
     .select('id, sop_ref, title, category, description, file_name, file_type, file_data, drive_url, rev, created_at')
     .order('created_at', { ascending: false });
