@@ -1,6 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,canReportIncident,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed}=require('../safety-policy');
+const {SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,canReportIncident,decideWorkflow}=require('../safety-policy');
 test('safety roles are explicit and public worker/admin are not safety roles',()=>{
  for(const role of ['MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER'])assert.ok(SAFETY_ROLES.has(role));
  assert.equal(SAFETY_ROLES.has('worker'),false);assert.equal(SAFETY_ROLES.has('admin'),false);
@@ -34,32 +34,44 @@ test('incident categories are limited to canonical values',()=>{
  assert.deepEqual([...CATEGORIES].sort(),['Unsafe Practice','Near Miss','Unsafe Acts','Unsafe Act','Unsafe Condition','Incident Reporting'].sort());
 });
 
-test('escalation chain is Mine Manager -> Area Safety Officer -> HQ, and nobody can skip a level',()=>{
- assert.equal(escalationTargetRole('MINE_MANAGER'),'AREA_SAFETY_OFFICER');
- assert.equal(escalationTargetRole('AREA_SAFETY_OFFICER'),'HQ_SAFETY_HEAD');
- for(const r of ['MINE_SO_MINING','MINE_SO_EM','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER','worker'])assert.equal(escalationTargetRole(r),null);
+const D=(o)=>decideWorkflow({isAssignee:true,fields:{remarks:'r',recommendations:'rec',actions:'a',justification:'j'},...o});
+test('MM review sends the incident back to the SO with remarks and recommendations',()=>{
+ for(const st of ['open','under_review','resolved']){const r=D({role:'MINE_MANAGER',status:st,step:'REVIEW'});assert.equal(r.ok,true);assert.equal(r.status,'action_assigned');assert.equal(r.to,'MINE_SO');assert.equal(r.action,'ASSIGN')}
+ assert.equal(D({role:'MINE_MANAGER',status:'open',step:'REVIEW',fields:{remarks:'r'}}).code,400);
+ assert.equal(D({role:'MINE_MANAGER',status:'closed',step:'REVIEW'}).code,409);
+ assert.equal(D({role:'MINE_MANAGER',status:'escalated',step:'REVIEW'}).code,409);
+ for(const r of ['MINE_SO_MINING','MINE_SO_EM','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'])assert.equal(D({role:r,status:'open',step:'REVIEW'}).code,403);
 });
-test('Mine Manager keeps the original status rules; ASO may escalate an already-escalated incident to HQ',()=>{
- assert.equal(canEscalateFromStatus('MINE_MANAGER','under_review'),true);
- assert.equal(canEscalateFromStatus('MINE_MANAGER','escalated'),false);
- assert.equal(canEscalateFromStatus('MINE_MANAGER','resolved'),false);
- assert.equal(canEscalateFromStatus('AREA_SAFETY_OFFICER','escalated'),true);
- assert.equal(canEscalateFromStatus('AREA_SAFETY_OFFICER','action_assigned'),true);
- assert.equal(canEscalateFromStatus('AREA_SAFETY_OFFICER','resolved'),false);
- assert.equal(canEscalateFromStatus('AREA_SAFETY_OFFICER','closed'),false);
- assert.equal(canEscalateFromStatus('HQ_SAFETY_HEAD','escalated'),false);
+test('SO can record action taken (returns to MM as resolved) or request escalation (returns to MM under review)',()=>{
+ for(const role of ['MINE_SO_MINING','MINE_SO_EM']){
+  const a=D({role,status:'action_assigned',step:'ACTION_TAKEN'});assert.equal(a.ok,true);assert.equal(a.status,'resolved');assert.equal(a.to,'MINE_MANAGER');
+  const e=D({role,status:'action_assigned',step:'REQUEST_ESCALATION',level:'HQ'});assert.equal(e.ok,true);assert.equal(e.status,'under_review');assert.equal(e.to,'MINE_MANAGER');assert.equal(e.stage,'escalation_requested');
+ }
+ assert.equal(D({role:'MINE_SO_MINING',status:'action_assigned',step:'REQUEST_ESCALATION'}).code,400);
+ assert.equal(D({role:'MINE_SO_MINING',status:'action_assigned',step:'ACTION_TAKEN',isAssignee:false}).code,403);
+ assert.equal(D({role:'MINE_SO_MINING',status:'open',step:'ACTION_TAKEN'}).code,409);
+ assert.equal(D({role:'MINE_SO_MINING',status:'action_assigned',step:'ACTION_TAKEN',fields:{}}).code,400);
 });
-test('HQ may return an incident only to its own Area ASO or its own Mine Manager',()=>{
- const mine={id:'m1',area_id:'a1'};
- assert.equal(hqReturnTargetAllowed({role:'AREA_SAFETY_OFFICER',assigned_area_id:'a1'},mine),true);
- assert.equal(hqReturnTargetAllowed({role:'AREA_SAFETY_OFFICER',assigned_area_id:'a2'},mine),false);
- assert.equal(hqReturnTargetAllowed({role:'MINE_MANAGER',assigned_mine_id:'m1'},mine),true);
- assert.equal(hqReturnTargetAllowed({role:'MINE_MANAGER',assigned_mine_id:'m2'},mine),false);
- assert.equal(hqReturnTargetAllowed({role:'LOCAL_SUPERVISOR',assigned_mine_id:'m1'},mine),false);
- assert.equal(hqReturnTargetAllowed({role:'AREA_SAFETY_OFFICER'},mine),false);
+test('only the Mine Manager can escalate, to ASO or HQ, and not once it is with the SO or already escalated',()=>{
+ assert.equal(D({role:'MINE_MANAGER',status:'under_review',step:'ESCALATE',level:'ASO'}).to,'AREA_SAFETY_OFFICER');
+ const hq=D({role:'MINE_MANAGER',status:'open',step:'ESCALATE',level:'HQ'});assert.equal(hq.to,'HQ_SAFETY_HEAD');assert.equal(hq.stage,'with_hq');assert.equal(hq.status,'escalated');
+ assert.equal(D({role:'MINE_MANAGER',status:'under_review',step:'ESCALATE'}).code,400);
+ for(const st of ['action_assigned','escalated','resolved','closed'])assert.equal(D({role:'MINE_MANAGER',status:st,step:'ESCALATE',level:'ASO'}).code,409);
+ for(const r of ['MINE_SO_MINING','MINE_SO_EM','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER'])assert.equal(D({role:r,status:'under_review',step:'ESCALATE',level:'ASO'}).code,403);
 });
-test('only Mine Safety Officers (Mining and E&M) can report incidents',()=>{
- assert.equal(canReportIncident('MINE_SO_MINING'),true);
- assert.equal(canReportIncident('MINE_SO_EM'),true);
- for(const r of ['HQ_SAFETY_HEAD','AREA_SAFETY_OFFICER','MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER','worker','admin',undefined])assert.equal(canReportIncident(r),false);
+test('ASO and HQ can only recommend back to the Mine Manager',()=>{
+ for(const role of ['AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD']){const r=D({role,status:'escalated',step:'RECOMMEND'});assert.equal(r.ok,true);assert.equal(r.status,'under_review');assert.equal(r.to,'MINE_MANAGER')}
+ assert.equal(D({role:'AREA_SAFETY_OFFICER',status:'escalated',step:'RECOMMEND',isAssignee:false}).code,403);
+ assert.equal(D({role:'AREA_SAFETY_OFFICER',status:'escalated',step:'RECOMMEND',fields:{}}).code,400);
+ assert.equal(D({role:'MINE_MANAGER',status:'escalated',step:'RECOMMEND'}).code,403);
+});
+test('closure belongs exclusively to the Mine Manager and only from resolved',()=>{
+ const c=D({role:'MINE_MANAGER',status:'resolved',step:'CLOSE'});assert.equal(c.ok,true);assert.equal(c.status,'closed');assert.equal(c.to,'SELF');
+ for(const st of ['open','under_review','action_assigned','escalated','closed'])assert.equal(D({role:'MINE_MANAGER',status:st,step:'CLOSE'}).code,409);
+ for(const r of ['MINE_SO_MINING','MINE_SO_EM','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER','worker','admin'])assert.equal(D({role:r,status:'resolved',step:'CLOSE'}).code,403);
+ assert.equal(D({role:'MINE_MANAGER',status:'resolved',step:'CLOSE',fields:{}}).code,400);
+});
+test('no role other than the Mine Manager can ever produce a closed status, and unknown steps are rejected',()=>{
+ for(const role of ['MINE_SO_MINING','MINE_SO_EM','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'])for(const step of Object.keys(require('../safety-policy').WORKFLOW))for(const st of ['open','under_review','action_assigned','escalated','resolved']){const r=D({role,status:st,step,level:'ASO'});assert.ok(!(r.ok&&r.status==='closed'))}
+ assert.equal(D({role:'MINE_MANAGER',status:'open',step:'NOPE'}).code,400);
 });

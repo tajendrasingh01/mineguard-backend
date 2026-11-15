@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole, canReportIncident, escalationTargetRole, canEscalateFromStatus, hqReturnTargetAllowed } = require('./safety-policy');
+const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole, canReportIncident, decideWorkflow } = require('./safety-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -498,12 +498,13 @@ app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) 
         const {error:re}=await supabase.rpc('mineguard_forward_incident_atomic',{
           p_incident_id:data.id,p_expected_version:data.version||1,p_new_status:'open',p_assignee_id:mgr.id,p_actor_id:p.id,
           p_from_role:p.role,p_to_role:'MINE_MANAGER',p_action:'FORWARD',p_comments:'Submitted for Mine Manager review',
-          p_context:{mine_id:mine.id,area_id:mine.area_id,auto_routed:true}
+          p_context:{mine_id:mine.id,area_id:mine.area_id,auto_routed:true,kind:'report_submitted',actor_name:p.name||null}
         });
         if(re) console.error('Auto-routing to Mine Manager failed',re.code);
         else routed_to={id:mgr.id,name:mgr.name,worker_id:mgr.worker_id,role:'MINE_MANAGER'};
       }
     } catch(e) { console.error('Auto-routing to Mine Manager failed'); }
+    try { await supabase.from('incidents').update({audit_metadata:{stage:'reported',last_step:'REPORT',last_actor_role:p.role,last_actor_id:p.id}}).eq('id',data.id); } catch { /* stage is a display hint only */ }
     const {version,...created}=data;
     res.status(201).json({incident:created,routed_to});
   } catch { res.status(500).json({error:'Unable to resolve assigned Mine/Project'}); }
@@ -551,7 +552,7 @@ app.get('/api/safety/incidents/mine', requireAuth, safetyPrincipal, async (req,r
   const p=req.principal, period=parsePeriod(req.query);
   if(!period) return res.status(400).json({error:'Invalid reporting period'});
   const {data,error,count}=await supabase.from('incidents')
-    .select('id,incident_ref,incident_type,category,discipline,date_of_incident,time_of_incident,location_zone,location_detail,severity,status,created_at,updated_at,resolved_at,closed_at',{count:'exact'})
+    .select('id,incident_ref,incident_type,category,discipline,mine_id,area_id,assignee_id,audit_metadata,date_of_incident,time_of_incident,location_zone,location_detail,severity,status,created_at,updated_at,resolved_at,closed_at',{count:'exact'})
     .eq('reporter_id',p.id).not('mine_id','is',null)
     .gte('created_at',period.from).lte('created_at',period.to)
     .order('created_at',{ascending:false});
@@ -633,132 +634,106 @@ app.post('/api/safety/incidents/:id/comments', requireAuth, safetyPrincipal, asy
   } catch {res.status(500).json({error:'Unable to save comment'});}
 });
 
-app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, async (req,res) => {
-  const p=req.principal, nextStatus=req.body.status;
-  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Status changes are not permitted for this role'});
-  if(['resolved','closed'].includes(nextStatus) && p.role!=='MINE_MANAGER') return res.status(403).json({error:'Incident resolution and closure are handled by the assigned Mine Manager'});
-  if(!STATUS_VALUES.has(nextStatus)) return res.status(400).json({error:'Invalid status'});
-  if(nextStatus==='escalated') return res.status(400).json({error:'Use the authorized forwarding workflow to escalate an incident'});
+/* ------------------------------------------------------------------ */
+/* Incident workflow. Policy lives in safety-policy.js (decideWorkflow). */
+/* Closure and escalation authority rest exclusively with the Mine Manager. */
+/* ------------------------------------------------------------------ */
+const gone=(req,res)=>res.status(410).json({error:'This endpoint was replaced by POST /api/safety/incidents/:id/workflow'});
+app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, gone);
+app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, gone);
+app.get('/api/safety/recipients', requireAuth, safetyPrincipal, gone);
+
+const clip=(v,n=4000)=>String(v==null?'':v).trim().slice(0,n);
+async function firstActiveUser(filters,orderBy='created_at'){
+  let q=supabase.from('users').select('id,name,worker_id,role,is_active,assigned_mine_id,assigned_area_id').eq('is_active',true);
+  for(const [k,v] of Object.entries(filters)) q=Array.isArray(v)?q.in(k,v):q.eq(k,v);
+  const {data,error}=await q.order(orderBy).limit(1);
+  if(error) throw new Error('USER_LOOKUP_FAILED');
+  return (data||[])[0]||null;
+}
+async function workflowDestination(to,incident,p){
+  if(to==='SELF') return p;
+  if(to==='MINE_MANAGER') return firstActiveUser({role:'MINE_MANAGER',assigned_mine_id:incident._mine.id});
+  if(to==='AREA_SAFETY_OFFICER') return firstActiveUser({role:'AREA_SAFETY_OFFICER',assigned_area_id:incident._mine.area_id});
+  if(to==='HQ_SAFETY_HEAD') return firstActiveUser({role:'HQ_SAFETY_HEAD'});
+  if(to==='MINE_SO'){
+    /* Back to the Safety Officer who reported it; if that officer is no longer active, an active SO of the same discipline. */
+    if(incident.reporter_id){
+      const r=await firstActiveUser({id:incident.reporter_id,role:['MINE_SO_MINING','MINE_SO_EM'],assigned_mine_id:incident._mine.id});
+      if(r) return r;
+    }
+    const role=incident.discipline==='Electrical & Mechanical'?'MINE_SO_EM':'MINE_SO_MINING';
+    return firstActiveUser({role,assigned_mine_id:incident._mine.id});
+  }
+  return null;
+}
+const NO_DEST={MINE_MANAGER:'No active Mine Manager is configured for this Mine/Project',AREA_SAFETY_OFFICER:'No active Area Safety Officer is configured for this Area',HQ_SAFETY_HEAD:'No active HQ Safety user is configured',MINE_SO:'No active Safety Officer is available for this incident'};
+
+app.post('/api/safety/incidents/:id/workflow', requireAuth, safetyPrincipal, async (req,res) => {
+  const p=req.principal, step=String(req.body.step||'');
   try {
     const incident=await getIncidentForPrincipal(req.params.id,p);
     if(!incident) return res.status(404).json({error:'Incident not found'});
-    const allowed=STATUS_TRANSITIONS[incident.status]||new Set();
-    if(!allowed.has(nextStatus)) return res.status(409).json({error:'Status transition is not permitted'});
-    if(nextStatus==='closed' && incident.status!=='resolved') return res.status(409).json({error:'Only resolved incidents can be closed'});
-    if(nextStatus==='action_assigned' && !incident.assignee_id) return res.status(409).json({error:'Assign an authorized recipient before marking action assigned'});
-    const updates={status:nextStatus,updated_at:new Date().toISOString(),version:(incident.version||1)+1};
-    if(nextStatus==='resolved'&&!incident.resolved_at) updates.resolved_at=new Date().toISOString();
-    if(nextStatus==='closed') updates.closed_at=new Date().toISOString();
-    const {data,error}=await supabase.from('incidents').update(updates).eq('id',incident.id).eq('version',incident.version||1).select('id,status,updated_at,resolved_at,closed_at,version').maybeSingle();
-    if(error) return res.status(500).json({error:'Unable to update incident'});
-    if(!data) return res.status(409).json({error:'Incident changed concurrently; reload and retry'});
-    res.json({incident:data});
-  } catch {res.status(500).json({error:'Unable to update incident'});}
+    const fields={remarks:clip(req.body.remarks),recommendations:clip(req.body.recommendations),actions:clip(req.body.actions),justification:clip(req.body.justification)};
+    const d=decideWorkflow({role:p.role,status:incident.status,step,level:req.body.level,isAssignee:incident.assignee_id===p.id,fields});
+    if(!d.ok) return res.status(d.code).json({error:d.error});
+    const dest=await workflowDestination(d.to,incident,p);
+    if(!dest) return res.status(409).json({error:NO_DEST[d.to]||'No valid destination for this step'});
+    const now=new Date().toISOString(), v=incident.version||1;
+    const updates={status:d.status,assignee_id:dest.id,updated_at:now,version:v+1,
+      audit_metadata:{...(incident.audit_metadata||{}),stage:d.stage,level:d.level||null,last_step:step,last_actor_role:p.role,last_actor_id:p.id}};
+    if(step==='ACTION_TAKEN') updates.resolved_at=now;
+    if(step==='REVIEW' && incident.status==='resolved') updates.resolved_at=null; /* sent back for rework */
+    if(step==='CLOSE'){ updates.closed_at=now; if(!incident.resolved_at) updates.resolved_at=now; }
+    const {data:upd,error:ue}=await supabase.from('incidents').update(updates).eq('id',incident.id).eq('version',v).select('id,incident_ref,status,assignee_id,updated_at,resolved_at,closed_at,version,audit_metadata').maybeSingle();
+    if(ue) return res.status(500).json({error:'Unable to update incident'});
+    if(!upd) return res.status(409).json({error:'Incident changed concurrently; reload and retry'});
+    const note=fields.remarks||fields.recommendations||fields.actions||fields.justification||null;
+    const {data:ev,error:he}=await supabase.from('incident_forwarding_history').insert({
+      incident_id:incident.id,actor_id:p.id,from_user_id:p.id,to_user_id:dest.id,from_role:p.role,to_role:dest.role,action:d.action,comments:note,
+      context:{kind:d.kind,stage:d.stage,level:d.level||null,remarks:fields.remarks||null,recommendations:fields.recommendations||null,actions:fields.actions||null,justification:fields.justification||null,mine_id:incident._mine.id,area_id:incident._mine.area_id,actor_name:p.name||null,to_name:dest.name||null}
+    }).select('id,action,from_role,to_role,comments,context,created_at').single();
+    if(he){
+      /* Keep state and history consistent: undo the state change if the audit row could not be written. */
+      await supabase.from('incidents').update({status:incident.status,assignee_id:incident.assignee_id,updated_at:incident.updated_at,version:v+2,audit_metadata:incident.audit_metadata||{},resolved_at:incident.resolved_at||null,closed_at:incident.closed_at||null}).eq('id',incident.id).eq('version',v+1);
+      console.error('Workflow history insert failed:',he.code,he.message);
+      return res.status(500).json({error:'Unable to record the workflow action'});
+    }
+    res.json({incident:upd,event:ev,routed_to:{id:dest.id,name:dest.name,role:dest.role}});
+  } catch(e) { console.error('Workflow error:',e&&e.message); res.status(500).json({error:'Unable to complete the workflow action'}); }
 });
 
-app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, async (req,res) => {
-  const p=req.principal, targetId=req.body.to_user_id, action=req.body.action;
-  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'].includes(p.role)) return res.status(403).json({error:'Forwarding is not permitted for this role'});
-  if(p.role==='HQ_SAFETY_HEAD'&&action!=='FORWARD') return res.status(403).json({error:'HQ can only return an incident to the Area Safety Officer or Mine Manager'});
-  if(!targetId || !['FORWARD','ESCALATE','ASSIGN','REASSIGN'].includes(action)) return res.status(400).json({error:'Destination and valid action are required'});
-  const comment=String(req.body.comments||'').trim();
-  if(action==='ESCALATE'&&!comment) return res.status(400).json({error:'Escalation comments are required'});
-  try {
-    const incident=await getIncidentForPrincipal(req.params.id,p);
-    if(!incident) return res.status(404).json({error:'Incident not found'});
-    if(p.role==='MINE_MANAGER' && action==='ESCALATE' && incident._mine.area_id!==p.assigned_area_id && p.assigned_area_id)
-      return res.status(403).json({error:'Incident Area does not match assignment'});
-    const {data:target,error:te}=await supabase.from('users').select('id,role,assigned_mine_id,assigned_area_id,is_active').eq('id',targetId).maybeSingle();
-    if(te||!target||target.is_active===false) return res.status(400).json({error:'Invalid destination assignment'});
-    if(action==='ESCALATE'){
-      const nextRole=escalationTargetRole(p.role);
-      if(!nextRole||target.role!==nextRole)
-        return res.status(403).json({error:nextRole==='HQ_SAFETY_HEAD'?'Escalation must target HQ Safety':'Escalation must target the assigned Area Safety Officer'});
-      if(nextRole==='AREA_SAFETY_OFFICER'&&target.assigned_area_id!==incident._mine.area_id)
-        return res.status(403).json({error:'Escalation must target the assigned Area Safety Officer'});
-    } else if(p.role==='HQ_SAFETY_HEAD') {
-      if(!hqReturnTargetAllowed(target,incident._mine))
-        return res.status(403).json({error:'HQ can return an incident only to the Area Safety Officer or Mine Manager responsible for it'});
-    } else {
-      if(p.role==='MINE_MANAGER' && !(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(target.role)&&target.assigned_mine_id===incident._mine.id))
-        return res.status(403).json({error:'Destination must be an authorized local supervisor or engineer in the same Mine/Project'});
-      if(p.role==='AREA_SAFETY_OFFICER' && target.assigned_area_id!==p.assigned_area_id && target.assigned_mine_id===null)
-        return res.status(403).json({error:'Destination is outside the assigned Area'});
-    }
-    if(action==='ESCALATE' && !canEscalateFromStatus(p.role,incident.status))
-      return res.status(409).json({error:'Incident cannot be escalated from its current status'});
-    if(action==='ASSIGN' && incident.status!=='under_review' && incident.status!=='action_assigned')
-      return res.status(409).json({error:'Corrective actions can be assigned only after review'});
-    if(action==='REASSIGN' && incident.status!=='action_assigned')
-      return res.status(409).json({error:'Only an action-assigned incident can be reassigned'});
-    if(action==='ASSIGN' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('action_assigned') && incident.status!=='action_assigned')
-      return res.status(409).json({error:'Incident cannot enter Action Assigned from its current status'});
-    if(p.role==='AREA_SAFETY_OFFICER'&&action!=='ESCALATE') {
-      if(!['LOCAL_SUPERVISOR','LOCAL_ENGINEER','MINE_MANAGER'].includes(target.role))
-        return res.status(403).json({error:'Area forwarding destination role is not permitted'});
-      if(target.assigned_mine_id) {
-        const targetMine=await getMine(target.assigned_mine_id);
-        if(!targetMine || targetMine.area_id!==p.assigned_area_id)
-          return res.status(403).json({error:'Destination Mine/Project is outside the assigned Area'});
-      } else if(target.assigned_area_id!==p.assigned_area_id) {
-        return res.status(403).json({error:'Destination is outside the assigned Area'});
-      }
-    }
-    const newStatus=action==='ESCALATE'?'escalated':(action==='ASSIGN'?'action_assigned':incident.status);
-    const {data:result,error:rpcError}=await supabase.rpc('mineguard_forward_incident_atomic',{
-      p_incident_id:incident.id,
-      p_expected_version:incident.version||1,
-      p_new_status:newStatus,
-      p_assignee_id:target.id,
-      p_actor_id:p.id,
-      p_from_role:p.role,
-      p_to_role:target.role,
-      p_action:action,
-      p_comments:comment||null,
-      p_context:{mine_id:incident._mine.id,area_id:incident._mine.area_id}
-    });
-    if(rpcError) {
-      if(rpcError.code==='40001') return res.status(409).json({error:'Incident changed concurrently; reload and retry'});
-      if(rpcError.code==='P0002') return res.status(404).json({error:'Incident not found'});
-      return res.status(409).json({error:'Forwarding could not be committed atomically'});
-    }
-    res.json({incident:result.incident,forwarding_event:result.forwarding_event});
-  } catch {res.status(500).json({error:'Unable to forward incident'});}
-});
-
-
-app.get('/api/safety/recipients', requireAuth, safetyPrincipal, async (req,res) => {
+/* Notifications: derived from live incident state (no separate store to drift out of sync).
+   "requires_action" items are incidents currently waiting on this user. */
+app.get('/api/safety/notifications', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal;
-  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'].includes(p.role)) return res.status(403).json({error:'Recipient lookup is not permitted for this role'});
-  if(!req.query.incident_id) return res.status(400).json({error:'incident_id is required'});
+  const cols='id,incident_ref,incident_type,category,severity,status,mine_id,assignee_id,reporter_id,version,created_at,updated_at,audit_metadata';
   try {
-    const incident=await getIncidentForPrincipal(req.query.incident_id,p);
-    if(!incident) return res.status(404).json({error:'Incident not found'});
-    const roles=p.role==='MINE_MANAGER'?['LOCAL_SUPERVISOR','LOCAL_ENGINEER','AREA_SAFETY_OFFICER']:p.role==='HQ_SAFETY_HEAD'?['AREA_SAFETY_OFFICER','MINE_MANAGER']:['MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER','HQ_SAFETY_HEAD'];
-    const {data:users,error}=await supabase.from('users').select('id,worker_id,name,role,assigned_mine_id,assigned_area_id,is_active').in('role',roles).eq('is_active',true);
-    if(error) return res.status(500).json({error:'Unable to load authorized recipients'});
-    const recipients=[];
-    for(const u of users||[]) {
-      if(p.role==='MINE_MANAGER') {
-        if(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(u.role)&&u.assigned_mine_id===incident._mine.id) recipients.push(u);
-        if(u.role==='AREA_SAFETY_OFFICER'&&u.assigned_area_id===incident._mine.area_id) recipients.push(u);
-      } else if(p.role==='HQ_SAFETY_HEAD') {
-        if(hqReturnTargetAllowed(u,incident._mine)) recipients.push(u);
-      } else {
-        if(u.role==='HQ_SAFETY_HEAD') recipients.push(u);
-        if(u.role==='MINE_MANAGER'&&u.assigned_mine_id) {
-          const targetMine=await getMine(u.assigned_mine_id);
-          if(targetMine&&targetMine.area_id===p.assigned_area_id) recipients.push(u);
-        }
-        if(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(u.role)&&u.assigned_mine_id) {
-          const targetMine=await getMine(u.assigned_mine_id);
-          if(targetMine&&targetMine.area_id===p.assigned_area_id) recipients.push(u);
-        }
-      }
+    let q=supabase.from('incidents').select(cols).not('mine_id','is',null).neq('status','closed').order('updated_at',{ascending:false}).limit(50);
+    if(p.role==='MINE_MANAGER' && p.assigned_mine_id) q=q.or('assignee_id.eq.'+p.id+',and(assignee_id.is.null,status.eq.open,mine_id.eq.'+p.assigned_mine_id+')');
+    else q=q.eq('assignee_id',p.id);
+    const {data:mine,error}=await q;
+    if(error) return res.status(500).json({error:'Unable to load notifications'});
+    let info=[];
+    if(['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)){
+      const since=new Date(Date.now()-14*86400000).toISOString();
+      const {data:own}=await supabase.from('incidents').select(cols).eq('reporter_id',p.id).not('mine_id','is',null).gte('updated_at',since).order('updated_at',{ascending:false}).limit(20);
+      const actionIds=new Set((mine||[]).map(r=>r.id));
+      info=(own||[]).filter(r=>!actionIds.has(r.id)&&r.version>1);
     }
-    res.json({recipients:recipients.map(u=>({id:u.id,worker_id:u.worker_id,name:u.name,role:u.role}))});
-  } catch {res.status(500).json({error:'Unable to load authorized recipients'});}
+    const rows=[...(mine||[]).map(r=>({...r,requires_action:true})),...info.map(r=>({...r,requires_action:false}))];
+    const ids=rows.map(r=>r.id), last=new Map();
+    if(ids.length){
+      const {data:hist}=await supabase.from('incident_forwarding_history').select('incident_id,from_role,comments,context,created_at').in('incident_id',ids).order('created_at',{ascending:false}).limit(400);
+      for(const h of hist||[]) if(!last.has(h.incident_id)) last.set(h.incident_id,h);
+    }
+    const items=rows.map(r=>{const h=last.get(r.id);return {incident_id:r.id,incident_ref:r.incident_ref,incident_type:r.incident_type||r.category,severity:r.severity,status:r.status,
+      stage:(r.audit_metadata&&r.audit_metadata.stage)||(r.status==='open'?'reported':null),requires_action:r.requires_action,version:r.version,at:(h&&h.created_at)||r.updated_at||r.created_at,
+      kind:h&&h.context&&h.context.kind||'report_submitted',from_role:h?h.from_role:r.reporter_id?null:null,note:h?h.comments:null,level:h&&h.context&&h.context.level||null}});
+    res.json({items,action_required:items.filter(i=>i.requires_action).length});
+  } catch(e) { console.error('Notifications error:',e&&e.message); res.status(500).json({error:'Unable to load notifications'}); }
 });
+
 
 app.get('/api/safety/analytics/hq', requireAuth, safetyPrincipal, async (req,res) => {
   if(req.principal.role!=='HQ_SAFETY_HEAD') return res.status(403).json({error:'HQ Safety Head access required'});

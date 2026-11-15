@@ -16,9 +16,9 @@ All require a bearer token and a database-backed active safety role:
 - `GET /api/safety/incidents?from=&to=&status=&category=&limit=&offset=`
 - `GET /api/safety/incidents/:id`
 - `POST /api/safety/incidents/:id/comments`
-- `PATCH /api/safety/incidents/:id/status`
-- `POST /api/safety/incidents/:id/forward`
-- `GET /api/safety/recipients?incident_id=` (returns only recipients permitted for that incident and role)
+- `POST /api/safety/incidents/:id/workflow` (`step`: `REVIEW`, `ACTION_TAKEN`, `REQUEST_ESCALATION`, `ESCALATE`, `RECOMMEND`, `CLOSE`)
+- `GET /api/safety/notifications` (incidents waiting on the caller, plus recent updates on a Safety Officer's own reports)
+- `PATCH .../status`, `POST .../forward` and `GET /api/safety/recipients` were replaced by the workflow endpoint and now return `410`.
 - `GET /api/safety/analytics/hq?from=&to=`
 - `GET /api/safety/analytics/area/:id?from=&to=`
 
@@ -40,11 +40,15 @@ The API adds Helmet security headers, exact-origin CORS allowlisting, request bo
 ## Tests and deployment
 Run `npm test` for manifest, policy, and fail-closed startup checks. GitHub Actions starts an ephemeral PostgreSQL 16 database, applies a representative legacy schema and the SECL migration, then verifies hierarchy, role constraints, forwarding atomicity, stale versions, status/category validation, append-only audit history, RPC grants, and RLS defaults. This is not a substitute for validating the actual Supabase schema/data. Before deployment: create a disposable Supabase project, back it up, apply the migration there, run seed reconciliation first without `--apply`, provision test users for each role, run negative cross-scope API tests, set Render environment variables, verify `/ready` and `/api/version`, and only then schedule production rollout with an approved backup/rollback plan. Render configuration is in `render.yaml`; Node.js 20 is required. No production database migration or deployment should occur without explicit authorization.
 
-## Reporting and escalation hierarchy
+## Incident workflow (closure and escalation rest with the Mine Manager)
 
-1. Only a Mine Safety Officer (Mining or Electrical & Mechanical) can report an incident; HQ, Area and Manager roles cannot. It is saved and automatically forwarded to the active Mine Manager of that Mine/Project (recorded as a `FORWARD` in the append-only history; the response includes `routed_to`, or `null` if the Mine has no active manager).
-2. The Mine Manager reviews, assigns action, resolves and closes.
-3. The Mine Manager may escalate to the Area Safety Officer of the Mine's Area, and the Area Safety Officer may escalate to HQ (`ESCALATE` requires remarks). Levels cannot be skipped.
-4. HQ may comment and return an incident (`FORWARD`) only to the responsible Area Safety Officer or Mine Manager.
+1. **Report** – only a Mine Safety Officer (Mining or E&M) can report. The incident is saved and lands with the Mine's active Mine Manager (appears in their notifications and dashboard).
+2. **Review** (`REVIEW`, Mine Manager) – records remarks and recommendations and sends it back to the Safety Officer (`action_assigned`).
+3. **Safety Officer action** – either `ACTION_TAKEN` (records the action; status `resolved`, returned to the Mine Manager for final review) or `REQUEST_ESCALATION` (asks the Mine Manager to escalate to the ASO or HQ; returned to the Mine Manager under review).
+4. **Escalation** (`ESCALATE`) – **only the Mine Manager** can escalate, to the Area Safety Officer or HQ, with remarks.
+5. **Recommendation** (`RECOMMEND`) – the ASO / HQ gives recommendations and hands the incident back to the Mine Manager. They cannot escalate onwards or close.
+6. **Closure** (`CLOSE`) – **only the Mine Manager**, from `resolved`, with closing remarks. This holds whether or not the incident was escalated.
+
+Every step is an append-only entry in `incident_forwarding_history` (`context.kind`, remarks, recommendations, actions, justification), and the current stage is kept in `incidents.audit_metadata.stage`. The rules are in `safety-policy.js` (`decideWorkflow`) and are unit-tested. No schema change is required.
 
 `GET /api/safety/incidents` rows additionally carry `assignee_role` and `assignee_name` (the current holder). No schema change or migration is required.
