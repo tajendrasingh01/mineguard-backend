@@ -43,4 +43,7 @@ function hqReturnTargetAllowed(target, mine) {
   if (target.role === 'MINE_MANAGER') return Boolean(target.assigned_mine_id) && target.assigned_mine_id === mine.id;
   return false;
 }
-module.exports={SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,ESCALATION_NEXT,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed};
+/* Only the Mine Safety Officers (Mining and Electrical & Mechanical) may report incidents. */
+const REPORTER_ROLES = new Set(['MINE_SO_MINING','MINE_SO_EM']);
+function canReportIncident(role) { return REPORTER_ROLES.has(role); }
+module.exports={canReportIncident,SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,ESCALATION_NEXT,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed};

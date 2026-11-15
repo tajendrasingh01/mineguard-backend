@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole, escalationTargetRole, canEscalateFromStatus, hqReturnTargetAllowed } = require('./safety-policy');
+const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole, canReportIncident, escalationTargetRole, canEscalateFromStatus, hqReturnTargetAllowed } = require('./safety-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -452,13 +452,13 @@ app.get('/api/org/mines', requireAuth, safetyPrincipal, async (req,res) => {
 });
 
 app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) => {
-  const p=req.principal, isHQ=p.role==='HQ_SAFETY_HEAD';
-  if(!isHQ && !['MINE_SO_MINING','MINE_SO_EM'].includes(p.role)) return res.status(403).json({error:'Incident submission is not permitted for this role'});
-  const category=req.body.category, discipline=isHQ?req.body.discipline:disciplineForRole(p.role);
+  const p=req.principal;
+  if(!canReportIncident(p.role)) return res.status(403).json({error:'Only Mine Safety Officers (Mining or Electrical & Mechanical) can report incidents'});
+  const category=req.body.category, discipline=disciplineForRole(p.role);
   const description=String(req.body.description||'').trim();
   if(!CATEGORIES.has(category)||!DISCIPLINES.has(discipline)||!description||description.length>10000)
     return res.status(400).json({error:'A valid report category, discipline and description are required'});
-  if(!isHQ && req.body.discipline && req.body.discipline!==discipline) return res.status(403).json({error:'Discipline is determined by the authenticated role'});
+  if(req.body.discipline && req.body.discipline!==discipline) return res.status(403).json({error:'Discipline is determined by the authenticated role'});
   const severityValues=new Set(['none','nearMiss','minor','serious','critical','fatality']);
   const severity=severityValues.has(req.body.severity)?req.body.severity:(category==='Near Miss'?'nearMiss':'minor');
   const injured=Number(req.body.persons_injured??0);
@@ -466,8 +466,8 @@ app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) 
   const photos=req.body.photos==null?null:String(req.body.photos);
   if(photos&&photos.length>7_000_000) return res.status(413).json({error:'Photo evidence exceeds the permitted upload size'});
   try {
-    const mine=isHQ?await getMine(req.body.mine_id):await getMine(p.assigned_mine_id);
-    if(!mine) return res.status(isHQ?400:403).json({error:isHQ?'A valid Mine/Project must be selected':'No valid Mine/Project assignment'});
+    const mine=await getMine(p.assigned_mine_id);
+    if(!mine) return res.status(403).json({error:'No valid Mine/Project assignment'});
     const now=new Date();
     const {data,error}=await supabase.from('incidents').insert([{
       reporter_id:p.id, reporter_worker_id:p.worker_id, reporter_name:p.name,
@@ -820,7 +820,7 @@ app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && Object.prototype.hasOwnProperty.call(err, 'body')) {
     return res.status(400).json({ error: 'Invalid JSON request body' });
   }
-  console.error('Unhandled MineGuard API error:', err && err.name ? err.name : 'Error');
+  console.error('Unhandled Suraksha Prabandhan Pranali API error:', err && err.name ? err.name : 'Error');
   return res.status(500).json({ error: 'Internal server error' });
 });
 

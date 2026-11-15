@@ -1,4 +1,4 @@
-# MineGuard Backend — SECL Safety Management
+# Suraksha Prabandhan Pranali (Backend) — SECL Safety Management
 
 Express.js + Supabase/PostgreSQL API. The service-role key and JWT secret are backend-only. Never commit real `.env` files.
 
@@ -42,7 +42,7 @@ Run `npm test` for manifest, policy, and fail-closed startup checks. GitHub Acti
 
 ## Reporting and escalation hierarchy
 
-1. A Mine Safety Officer reports an incident. It is saved and automatically forwarded to the active Mine Manager of that Mine/Project (recorded as a `FORWARD` in the append-only history; the response includes `routed_to`, or `null` if the Mine has no active manager).
+1. Only a Mine Safety Officer (Mining or Electrical & Mechanical) can report an incident; HQ, Area and Manager roles cannot. It is saved and automatically forwarded to the active Mine Manager of that Mine/Project (recorded as a `FORWARD` in the append-only history; the response includes `routed_to`, or `null` if the Mine has no active manager).
 2. The Mine Manager reviews, assigns action, resolves and closes.
 3. The Mine Manager may escalate to the Area Safety Officer of the Mine's Area, and the Area Safety Officer may escalate to HQ (`ESCALATE` requires remarks). Levels cannot be skipped.
 4. HQ may comment and return an incident (`FORWARD`) only to the responsible Area Safety Officer or Mine Manager.
