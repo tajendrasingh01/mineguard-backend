@@ -25,4 +25,22 @@ function disciplineForRole(role) {
   if (role === 'MINE_SO_EM') return 'Electrical & Mechanical';
   return null;
 }
-module.exports={SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole};
+/* Escalation chain: Mine Safety Officer reports -> Mine Manager (review + closure) -> Area Safety Officer -> HQ.
+   Each level may escalate only to the next one; HQ is the top and may only return an incident downwards. */
+const ESCALATION_NEXT = Object.freeze({ MINE_MANAGER: 'AREA_SAFETY_OFFICER', AREA_SAFETY_OFFICER: 'HQ_SAFETY_HEAD' });
+const ASO_ESCALATABLE = new Set(['open','under_review','action_assigned','escalated']);
+function escalationTargetRole(role) { return ESCALATION_NEXT[role] || null; }
+function canEscalateFromStatus(role, status) {
+  if (role === 'MINE_MANAGER') return Boolean(STATUS_TRANSITIONS[status] && STATUS_TRANSITIONS[status].has('escalated'));
+  // An incident already escalated to the ASO must still be escalatable onwards to HQ (status stays 'escalated').
+  if (role === 'AREA_SAFETY_OFFICER') return ASO_ESCALATABLE.has(status);
+  return false;
+}
+/* Who HQ may hand an incident back to: the Area's ASO or the incident Mine's Manager. */
+function hqReturnTargetAllowed(target, mine) {
+  if (!target || !mine) return false;
+  if (target.role === 'AREA_SAFETY_OFFICER') return Boolean(target.assigned_area_id) && target.assigned_area_id === mine.area_id;
+  if (target.role === 'MINE_MANAGER') return Boolean(target.assigned_mine_id) && target.assigned_mine_id === mine.id;
+  return false;
+}
+module.exports={SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,ESCALATION_NEXT,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed};

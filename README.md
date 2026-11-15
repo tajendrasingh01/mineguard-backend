@@ -39,3 +39,12 @@ The API adds Helmet security headers, exact-origin CORS allowlisting, request bo
 
 ## Tests and deployment
 Run `npm test` for manifest, policy, and fail-closed startup checks. GitHub Actions starts an ephemeral PostgreSQL 16 database, applies a representative legacy schema and the SECL migration, then verifies hierarchy, role constraints, forwarding atomicity, stale versions, status/category validation, append-only audit history, RPC grants, and RLS defaults. This is not a substitute for validating the actual Supabase schema/data. Before deployment: create a disposable Supabase project, back it up, apply the migration there, run seed reconciliation first without `--apply`, provision test users for each role, run negative cross-scope API tests, set Render environment variables, verify `/ready` and `/api/version`, and only then schedule production rollout with an approved backup/rollback plan. Render configuration is in `render.yaml`; Node.js 20 is required. No production database migration or deployment should occur without explicit authorization.
+
+## Reporting and escalation hierarchy
+
+1. A Mine Safety Officer reports an incident. It is saved and automatically forwarded to the active Mine Manager of that Mine/Project (recorded as a `FORWARD` in the append-only history; the response includes `routed_to`, or `null` if the Mine has no active manager).
+2. The Mine Manager reviews, assigns action, resolves and closes.
+3. The Mine Manager may escalate to the Area Safety Officer of the Mine's Area, and the Area Safety Officer may escalate to HQ (`ESCALATE` requires remarks). Levels cannot be skipped.
+4. HQ may comment and return an incident (`FORWARD`) only to the responsible Area Safety Officer or Mine Manager.
+
+`GET /api/safety/incidents` rows additionally carry `assignee_role` and `assignee_name` (the current holder). No schema change or migration is required.

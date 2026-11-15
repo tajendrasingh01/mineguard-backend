@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole } = require('./safety-policy');
+const { SAFETY_ROLES, STATUS_TRANSITIONS, STATUS_VALUES, DISCIPLINES, CATEGORIES, canReadMine, disciplineForRole, escalationTargetRole, canEscalateFromStatus, hqReturnTargetAllowed } = require('./safety-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -484,9 +484,26 @@ app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) 
       sop_followed:String(req.body.sop_followed||'unknown').slice(0,30),
       witnesses:req.body.witnesses?String(req.body.witnesses).slice(0,1000):null,
       photos, status:'open'
-    }]).select('id,incident_ref,area_id,mine_id,category,discipline,status,created_at').single();
+    }]).select('id,incident_ref,area_id,mine_id,category,discipline,status,created_at,version').single();
     if(error) return res.status(500).json({error:'Unable to save incident'});
-    res.status(201).json({incident:data});
+    /* Hierarchy: a reported incident is forwarded to the Mine Manager of the Mine for review and closure.
+       Best effort: the report is already saved, so a routing problem never loses it (it stays visible to the Mine). */
+    let routed_to=null;
+    try {
+      const {data:mgrs}=await supabase.from('users').select('id,name,worker_id,is_active').eq('role','MINE_MANAGER').eq('assigned_mine_id',mine.id).order('created_at').limit(5);
+      const mgr=(mgrs||[]).find(u=>u.is_active!==false);
+      if(mgr){
+        const {error:re}=await supabase.rpc('mineguard_forward_incident_atomic',{
+          p_incident_id:data.id,p_expected_version:data.version||1,p_new_status:'open',p_assignee_id:mgr.id,p_actor_id:p.id,
+          p_from_role:p.role,p_to_role:'MINE_MANAGER',p_action:'FORWARD',p_comments:'Submitted for Mine Manager review',
+          p_context:{mine_id:mine.id,area_id:mine.area_id,auto_routed:true}
+        });
+        if(re) console.error('Auto-routing to Mine Manager failed',re.code);
+        else routed_to={id:mgr.id,name:mgr.name,worker_id:mgr.worker_id,role:'MINE_MANAGER'};
+      }
+    } catch(e) { console.error('Auto-routing to Mine Manager failed'); }
+    const {version,...created}=data;
+    res.status(201).json({incident:created,routed_to});
   } catch { res.status(500).json({error:'Unable to resolve assigned Mine/Project'}); }
 });
 app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) => {
@@ -515,7 +532,17 @@ app.get('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) =
   }
   const {data,error,count}=await q;
   if(error) return res.status(500).json({error:'Unable to load incidents'});
-  res.json({incidents:data||[],total:count||0,limit,offset,from:period.from,to:period.to});
+  /* Additive: tell the UI who currently holds each incident (Mine Manager / ASO / HQ) without a per-row lookup. */
+  const rows=data||[];
+  try {
+    const ids=[...new Set(rows.map(r=>r.assignee_id).filter(Boolean))];
+    if(ids.length){
+      const {data:holders}=await supabase.from('users').select('id,name,role').in('id',ids);
+      const byId=new Map((holders||[]).map(u=>[u.id,u]));
+      rows.forEach(r=>{const u=byId.get(r.assignee_id);if(u){r.assignee_role=u.role;r.assignee_name=u.name}});
+    }
+  } catch { /* the list still works without holder details */ }
+  res.json({incidents:rows,total:count||0,limit,offset,from:period.from,to:period.to});
 });
 
 app.get('/api/safety/incidents/mine', requireAuth, safetyPrincipal, async (req,res) => {
@@ -629,7 +656,8 @@ app.patch('/api/safety/incidents/:id/status', requireAuth, safetyPrincipal, asyn
 
 app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal, targetId=req.body.to_user_id, action=req.body.action;
-  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Forwarding is not permitted for this role'});
+  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'].includes(p.role)) return res.status(403).json({error:'Forwarding is not permitted for this role'});
+  if(p.role==='HQ_SAFETY_HEAD'&&action!=='FORWARD') return res.status(403).json({error:'HQ can only return an incident to the Area Safety Officer or Mine Manager'});
   if(!targetId || !['FORWARD','ESCALATE','ASSIGN','REASSIGN'].includes(action)) return res.status(400).json({error:'Destination and valid action are required'});
   const comment=String(req.body.comments||'').trim();
   if(action==='ESCALATE'&&!comment) return res.status(400).json({error:'Escalation comments are required'});
@@ -641,15 +669,21 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
     const {data:target,error:te}=await supabase.from('users').select('id,role,assigned_mine_id,assigned_area_id,is_active').eq('id',targetId).maybeSingle();
     if(te||!target||target.is_active===false) return res.status(400).json({error:'Invalid destination assignment'});
     if(action==='ESCALATE'){
-      if(p.role!=='MINE_MANAGER'||target.role!=='AREA_SAFETY_OFFICER'||target.assigned_area_id!==incident._mine.area_id)
+      const nextRole=escalationTargetRole(p.role);
+      if(!nextRole||target.role!==nextRole)
+        return res.status(403).json({error:nextRole==='HQ_SAFETY_HEAD'?'Escalation must target HQ Safety':'Escalation must target the assigned Area Safety Officer'});
+      if(nextRole==='AREA_SAFETY_OFFICER'&&target.assigned_area_id!==incident._mine.area_id)
         return res.status(403).json({error:'Escalation must target the assigned Area Safety Officer'});
+    } else if(p.role==='HQ_SAFETY_HEAD') {
+      if(!hqReturnTargetAllowed(target,incident._mine))
+        return res.status(403).json({error:'HQ can return an incident only to the Area Safety Officer or Mine Manager responsible for it'});
     } else {
       if(p.role==='MINE_MANAGER' && !(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(target.role)&&target.assigned_mine_id===incident._mine.id))
         return res.status(403).json({error:'Destination must be an authorized local supervisor or engineer in the same Mine/Project'});
       if(p.role==='AREA_SAFETY_OFFICER' && target.assigned_area_id!==p.assigned_area_id && target.assigned_mine_id===null)
         return res.status(403).json({error:'Destination is outside the assigned Area'});
     }
-    if(action==='ESCALATE' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('escalated'))
+    if(action==='ESCALATE' && !canEscalateFromStatus(p.role,incident.status))
       return res.status(409).json({error:'Incident cannot be escalated from its current status'});
     if(action==='ASSIGN' && incident.status!=='under_review' && incident.status!=='action_assigned')
       return res.status(409).json({error:'Corrective actions can be assigned only after review'});
@@ -657,7 +691,7 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
       return res.status(409).json({error:'Only an action-assigned incident can be reassigned'});
     if(action==='ASSIGN' && !(STATUS_TRANSITIONS[incident.status]||new Set()).has('action_assigned') && incident.status!=='action_assigned')
       return res.status(409).json({error:'Incident cannot enter Action Assigned from its current status'});
-    if(p.role==='AREA_SAFETY_OFFICER') {
+    if(p.role==='AREA_SAFETY_OFFICER'&&action!=='ESCALATE') {
       if(!['LOCAL_SUPERVISOR','LOCAL_ENGINEER','MINE_MANAGER'].includes(target.role))
         return res.status(403).json({error:'Area forwarding destination role is not permitted'});
       if(target.assigned_mine_id) {
@@ -693,12 +727,12 @@ app.post('/api/safety/incidents/:id/forward', requireAuth, safetyPrincipal, asyn
 
 app.get('/api/safety/recipients', requireAuth, safetyPrincipal, async (req,res) => {
   const p=req.principal;
-  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER'].includes(p.role)) return res.status(403).json({error:'Recipient lookup is not permitted for this role'});
+  if(!['MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD'].includes(p.role)) return res.status(403).json({error:'Recipient lookup is not permitted for this role'});
   if(!req.query.incident_id) return res.status(400).json({error:'incident_id is required'});
   try {
     const incident=await getIncidentForPrincipal(req.query.incident_id,p);
     if(!incident) return res.status(404).json({error:'Incident not found'});
-    const roles=p.role==='MINE_MANAGER'?['LOCAL_SUPERVISOR','LOCAL_ENGINEER','AREA_SAFETY_OFFICER']:['MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER'];
+    const roles=p.role==='MINE_MANAGER'?['LOCAL_SUPERVISOR','LOCAL_ENGINEER','AREA_SAFETY_OFFICER']:p.role==='HQ_SAFETY_HEAD'?['AREA_SAFETY_OFFICER','MINE_MANAGER']:['MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER','HQ_SAFETY_HEAD'];
     const {data:users,error}=await supabase.from('users').select('id,worker_id,name,role,assigned_mine_id,assigned_area_id,is_active').in('role',roles).eq('is_active',true);
     if(error) return res.status(500).json({error:'Unable to load authorized recipients'});
     const recipients=[];
@@ -706,7 +740,10 @@ app.get('/api/safety/recipients', requireAuth, safetyPrincipal, async (req,res) 
       if(p.role==='MINE_MANAGER') {
         if(['LOCAL_SUPERVISOR','LOCAL_ENGINEER'].includes(u.role)&&u.assigned_mine_id===incident._mine.id) recipients.push(u);
         if(u.role==='AREA_SAFETY_OFFICER'&&u.assigned_area_id===incident._mine.area_id) recipients.push(u);
+      } else if(p.role==='HQ_SAFETY_HEAD') {
+        if(hqReturnTargetAllowed(u,incident._mine)) recipients.push(u);
       } else {
+        if(u.role==='HQ_SAFETY_HEAD') recipients.push(u);
         if(u.role==='MINE_MANAGER'&&u.assigned_mine_id) {
           const targetMine=await getMine(u.assigned_mine_id);
           if(targetMine&&targetMine.area_id===p.assigned_area_id) recipients.push(u);
