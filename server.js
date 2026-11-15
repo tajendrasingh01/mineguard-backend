@@ -484,12 +484,14 @@ app.post('/api/safety/incidents', requireAuth, safetyPrincipal, async (req,res) 
       sop_followed:String(req.body.sop_followed||'unknown').slice(0,30),
       witnesses:req.body.witnesses?String(req.body.witnesses).slice(0,1000):null,
       photos, status:'open'
-    }]).select('id,incident_ref,area_id,mine_id,category,discipline,status,created_at,version').single();
-    if(error) return res.status(500).json({error:'Unable to save incident'});
+    }]).select('id,incident_ref,area_id,mine_id,category,discipline,status,created_at').single();
+    if(error){ console.error('Incident insert failed:',error.code,error.message,error.details||''); return res.status(500).json({error:'Unable to save incident'+(error.code?' (code '+error.code+')':'')}); }
     /* Hierarchy: a reported incident is forwarded to the Mine Manager of the Mine for review and closure.
        Best effort: the report is already saved, so a routing problem never loses it (it stays visible to the Mine). */
     let routed_to=null;
     try {
+      const {data:vrow}=await supabase.from('incidents').select('version').eq('id',data.id).maybeSingle();
+      data.version=vrow&&vrow.version||1;
       const {data:mgrs}=await supabase.from('users').select('id,name,worker_id,is_active').eq('role','MINE_MANAGER').eq('assigned_mine_id',mine.id).order('created_at').limit(5);
       const mgr=(mgrs||[]).find(u=>u.is_active!==false);
       if(mgr){
