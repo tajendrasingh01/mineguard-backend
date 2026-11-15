@@ -1,6 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed}=require('../safety-policy');
+const {SAFETY_ROLES,STATUS_TRANSITIONS,STATUS_VALUES,DISCIPLINES,CATEGORIES,canReadMine,disciplineForRole,canReportIncident,escalationTargetRole,canEscalateFromStatus,hqReturnTargetAllowed}=require('../safety-policy');
 test('safety roles are explicit and public worker/admin are not safety roles',()=>{
  for(const role of ['MINE_SO_MINING','MINE_SO_EM','MINE_MANAGER','AREA_SAFETY_OFFICER','HQ_SAFETY_HEAD','LOCAL_SUPERVISOR','LOCAL_ENGINEER'])assert.ok(SAFETY_ROLES.has(role));
  assert.equal(SAFETY_ROLES.has('worker'),false);assert.equal(SAFETY_ROLES.has('admin'),false);
@@ -57,4 +57,9 @@ test('HQ may return an incident only to its own Area ASO or its own Mine Manager
  assert.equal(hqReturnTargetAllowed({role:'MINE_MANAGER',assigned_mine_id:'m2'},mine),false);
  assert.equal(hqReturnTargetAllowed({role:'LOCAL_SUPERVISOR',assigned_mine_id:'m1'},mine),false);
  assert.equal(hqReturnTargetAllowed({role:'AREA_SAFETY_OFFICER'},mine),false);
+});
+test('only Mine Safety Officers (Mining and E&M) can report incidents',()=>{
+ assert.equal(canReportIncident('MINE_SO_MINING'),true);
+ assert.equal(canReportIncident('MINE_SO_EM'),true);
+ for(const r of ['HQ_SAFETY_HEAD','AREA_SAFETY_OFFICER','MINE_MANAGER','LOCAL_SUPERVISOR','LOCAL_ENGINEER','worker','admin',undefined])assert.equal(canReportIncident(r),false);
 });
