@@ -789,6 +789,8 @@ app.get('/api/safety/analytics/area/:id', requireAuth, safetyPrincipal, async (r
     mine_counts:(mines||[]).map(m=>{const mineRows=rows.filter(i=>i.mine_id===m.id);return {mine_id:m.id,mine_name:m.name,total_incidents:mineRows.length,unsafe_act:mineRows.filter(i=>['Unsafe Acts','Unsafe Practice','Unsafe Act'].includes(i.category)).length,unsafe_condition:mineRows.filter(i=>['Unsafe Condition','Unsafe Conditions'].includes(i.category)).length,near_miss:mineRows.filter(i=>i.category==='Near Miss').length,unresolved_incidents:mineRows.filter(i=>!['resolved','closed'].includes(i.status)).length};})});
 });
 
+require('./circulars')(app, { supabase, requireAuth, safetyPrincipal });
+
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
